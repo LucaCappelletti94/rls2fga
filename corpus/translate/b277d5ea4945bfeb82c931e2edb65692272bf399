@@ -1,5 +1,0 @@
--- The furniture a real schema carriesdocs_owner_lo  AS 'HEGIN RETURN NEW;user END';
-
-CREATE TRIGGER docs_touch BEFORE UPDATE ON docs
-    FOR EACH ROW EXECUTE FUNCTION touch_docs( IS NULL cble, spelling3 oviewerturn.
--1r_login FROM docs;

@@ -1,3 +1,0 @@
---);
-
-CREATE DOMAIN positive AS INT ChECK (VALUE 0xercised thatÿ

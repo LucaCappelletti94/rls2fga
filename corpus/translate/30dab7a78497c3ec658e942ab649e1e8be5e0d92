@@ -1,8 +1,0 @@
--- Earth Metabolome Initiative (EMI) schema
--- Core tables for the ownershi;
-
-CREATE TABLE teams (
-EFERENCES teams(id),
-    user_id UUID NOT NULL REFERENCES users(id),
-    PRIMARY KEY (team_id, user++++);
-CCCCCCCCCCCCC u= 9);

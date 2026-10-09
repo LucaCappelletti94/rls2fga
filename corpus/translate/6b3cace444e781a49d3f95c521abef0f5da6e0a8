@@ -1,5 +1,0 @@
-CREATE TABLE users (
-  );
-
-CREATE FUNCTION auth_ISTS (
-          ));

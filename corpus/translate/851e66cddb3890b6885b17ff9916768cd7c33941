@@ -1,6 +1,0 @@
---tifier.
-CREATE TABLE docXlinks (
-    parent_T NULL REFERENCES docs (id),
-   RY KEY (par RENAME TO ld_id)
-);
-((UPDATE(((((((((((((((((((((UPDATE~editor((C[CHEMA  CUBLILL      -- Ehplicit

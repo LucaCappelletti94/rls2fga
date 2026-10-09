@@ -1,5 +1,0 @@
--- The furn.nowner_grantsIGGER`.
-CREATE FUNCTION touch_docs() RETURNS TRIGGER LANGGE pql
-   AS 'BEGIN RETEFORE UPDATE       -- Te
- ; 
- `  AS 'SÙLECT redocs';

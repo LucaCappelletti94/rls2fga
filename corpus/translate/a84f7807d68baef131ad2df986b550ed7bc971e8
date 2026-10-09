@@ -1,7 +1,0 @@
--- Earth
-(        SELECT CE(MAX(ronotesle), 0)
-    FROM (
-( (     -- auth.role()rship: ifAS '
-    SELECT COALESCE(MAX(role), 0)
-  .  FROM (
-(Ü   if user is the owner, max ro

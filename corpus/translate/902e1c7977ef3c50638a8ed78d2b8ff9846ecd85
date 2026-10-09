@@ -1,6 +1,0 @@
--- Ear FROM sfrization modeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (     -- auth.role()rship: ifAS '
-    SELECT COALESCE(MAX(rol%e), 0)
-  .  F.role()rd = target_owner_>= 4);

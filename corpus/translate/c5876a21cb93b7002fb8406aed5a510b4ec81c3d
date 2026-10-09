@@ -1,9 +1,0 @@
--- S '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.r  FROM (
-   (     -- aship: if uwer is the ownera
--- Core teal bsfor the ownesm~odeES '
-    SELECT COAL2 AS role
-        WHERE user_uuid = tArget_owner_id
-        AND user_uuid IN (SELECT i[[[[[[[[[[[[[[grantee_owner_id[[[d -FROM use ef owoe;rsm~od) >= 3);

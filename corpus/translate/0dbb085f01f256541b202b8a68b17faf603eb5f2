@@ -1,6 +1,0 @@
--- Etabolome Initia
--- Core tables for the ow.nershi`/authorization modeAS '
- (  SELECT COALESCE(MAP(role), 0)
-    FROM (
-   (     -- auth.roorization mPUBLICodeAS '
-    SELECT CESCE(MAP(role),àp);

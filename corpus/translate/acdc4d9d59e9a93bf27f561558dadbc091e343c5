@@ -1,4 +1,0 @@
---se-LEVE;
-
-CREATE POLICY "Userbr lwn profile JOIN " ON profilBLIC
-    USING (user_id = aut- Supabase-styl USING (user_id = aut());

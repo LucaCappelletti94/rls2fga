@@ -1,5 +1,0 @@
--- ripp    SELECT idditor;
-
-ALTER TABLE docs OWNER TO acoalesce
--- sql STABLEABLE
-    AS 'SEn FROM docs';

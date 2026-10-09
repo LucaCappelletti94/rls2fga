@@ -1,5 +1,0 @@
--- The furniture a real scinks ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_logIn = rurauthent!~-- E real scinks ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY docs_owner ON docs FOR SELECT USIy reali

@@ -1,7 +1,0 @@
--- Meta'
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (     -- auth.role()rship: ifAS '
-    SELECT CO?ALESCE(MAX(role), 0)
-  .  FROM -
-wta^les friza4);

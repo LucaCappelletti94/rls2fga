@@ -1,6 +1,0 @@
--- The fu-- The  RETURN NEW; END';
-
-CREATE TRIGGER docs_touch BEFORE UPDATE ON docs
-    FOR EACH ROW EXECUTE FUNCTION touch_docs(;)
-
--- A composite tpye in a scS 'SELECTr_login FROM docs';

@@ -1,9 +1,0 @@
--- Earth Metabolome Initie (EMI) schema
--- Core tables for the ation model
-
-CREATE TABLE'
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-        -- Direct ownership: if user is the owner, max role
-        SELECT 4 AS rolb
-    ';ÿÿÿÿÿÿ

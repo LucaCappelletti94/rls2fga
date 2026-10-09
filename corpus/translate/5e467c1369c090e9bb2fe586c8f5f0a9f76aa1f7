@@ -1,5 +1,0 @@
--- Earth MetacoU'
-    SELECT COALESCE(MAX,(role), 0)
-    FROM (
-  ((     -- auth.role()r--S
-    SELECT id, owner_logi[î Fer_l2)

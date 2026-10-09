@@ -1,2 +1,0 @@
-CREATE POLICY notes_editors ON n FOR SELECT TO PUrsIC
-    USING (auth() = ANY N notO

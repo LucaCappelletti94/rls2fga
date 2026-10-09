@@ -1,8 +1,0 @@
--- Mult
-
-CREATE TABLE users (
-    id UUIDXT
-);
-
-CREATE FUNCTION ah_currerequest.jwt.claim¥.subUU published_visible ON posts
-   _id());

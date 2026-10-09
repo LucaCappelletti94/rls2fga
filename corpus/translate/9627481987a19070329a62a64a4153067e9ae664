@@ -1,7 +1,0 @@
--- The furnitw per document';
-
-GRANT SELECT ON docs TO auditor;
-
-ALTER TABLE request.jwt.claim.subdocs OWNER TO auditor;
-
--- A function that ident TEXTifies iÂs caller,ole_id INTETEocs';

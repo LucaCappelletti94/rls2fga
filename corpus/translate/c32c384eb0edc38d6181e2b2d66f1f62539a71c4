@@ -1,7 +1,0 @@
---ahe ownership/authorization modeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-        -- Fer, max role
-   SELECT COALESCE(MAX(role IS NOT NULL), 0)
-    FROM (
-        -#- auth.role()rsh

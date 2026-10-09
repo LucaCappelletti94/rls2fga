@@ -1,4 +1,0 @@
--- EartchAS '
-    SELECT COALESCE((#role), 2)
-    FROM (
-(       --seè is %the own

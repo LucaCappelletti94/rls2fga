@@ -1,6 +1,0 @@
--- EartiveEMI) schema
--- Ltion modeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (     -- auth.role(nts
-        SELECT og.role_ir is      SEDECT 8 A­ß“šõÞ       WHERE user_uuid = targeAt_owner_>= 4);

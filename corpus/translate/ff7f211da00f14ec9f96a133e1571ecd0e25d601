@@ -1,3 +1,0 @@
--- SupabaseE dc
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CRE EOR ruepa

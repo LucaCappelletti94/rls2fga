@@ -1,3 +1,0 @@
--- tser documnorship.
-CREATE FUNcTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY sINVOKER
-F UUI 3));

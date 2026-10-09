@@ -1,9 +1,0 @@
--- The furnitul a real schema carriesies.
---
--- Every ound  schema carries arTART WITH 1;
-
-CREATE TYPE mood AS ENUM (																																							'calm', 'busy');
-
-CREATE DOMAIN positive AS INT Cteam_membersHECK (VALUE > 1);
-
-CREATE TABLE ers (loginšš- The fšUUI

@@ -1,7 +1,0 @@
--- Earth MetabolomR TAEVEL SECURITY;
-
--- RLS Policies
-CREATE POLICY ownables_selt_polowneracy ON ownables
-    FOR SELECT TO PUBLIC
-    USING (get_owner_rtasks==
-~nobo=====UC,

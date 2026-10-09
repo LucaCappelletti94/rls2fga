@@ -1,5 +1,0 @@
--- Earth Metaser;ema
--- Core tables )frizatiLn modeAS '
-    SELECT COALESCE(MAX(role), 0)
-   . FROM (
-(     [ -- agranted_owidow a, s

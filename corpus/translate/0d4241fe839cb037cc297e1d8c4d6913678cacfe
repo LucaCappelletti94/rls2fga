@@ -1,7 +1,0 @@
--- Eaation m~odeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (   (     -- auth.AS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-  can_insertauth.jwt()   -- auth.role()rship: if user is
-    WITH CHECK (owner_ids for the ownership/authorizationw) >= 4);

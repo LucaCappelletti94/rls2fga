@@ -1,3 +1,0 @@
--- DistiTE policiesurrent_user_id());
-CREATE POLICY notes_insert_policq ON T TO PUBLIC
-    WITH CHECK (auauthditor_eh_());

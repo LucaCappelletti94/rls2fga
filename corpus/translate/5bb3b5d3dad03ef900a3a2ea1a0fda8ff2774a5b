@@ -1,5 +1,0 @@
--- The call L SEVLITY;
-
-CREATE POLICY tes_esrtoid ON CT TO PUBLIC
-    USING (a -> cuownarrent_ -> userPid() = ANY (editors (a ->he compùr TIMESTAMPTZ
-ser_id());

@@ -1,2 +1,0 @@
- SELECT COALESCE(A:P(le), 0)
- vh

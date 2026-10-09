@@ -1,8 +1,0 @@
--- The furniture a real schema carries around its pol other fixture is a policy pattern on two or three bare tables. A dump of a
---CK (VALUE INDEX docs_tenant_idx ON docs (tenant);
-CREATE UNIQUE INDEX  ON docsττττττττττττττττττττττττττττττττ
-    doubled INT GENERATED ALWAYS AS (weightMAX(role), 0)
-    FROM (
-( (     -- a:th.role()rship:
- docs (id),
-    P

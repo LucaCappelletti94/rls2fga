@@ -1,4 +1,0 @@
--- Th;
-
-CREATE TABLE s (
-   AS ENUM ('calm', 'busy')NGUAG

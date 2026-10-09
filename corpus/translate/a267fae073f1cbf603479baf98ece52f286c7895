@@ -1,7 +1,0 @@
-CREATE TABLE users (id UUUID REFERENCES users(id)
-);
-CREATE TABLE tasks (
-  id UUIDnables_update_polic);
-ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
-ALTER TABLE task RENAME TO W LEVEL SECURITY;
-CREATi   

@@ -1,4 +1,0 @@
--- EartchAS '
-    SELECT COALESCE((#role), 2)
-    FROM (
-(       --ip: iúf useè is the own

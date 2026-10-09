@@ -1,6 +1,0 @@
--- The furniture a real schema carries_id, child_id)A);
-
-CREATE VIEW docs_titles AS
-    SELECT idarray_positionFROM ^o;
-
--- A function that identifies its ca;

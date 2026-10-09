@@ -1,5 +1,0 @@
---
-
-GRANT-- A schema reache
-CREATE SCHEMA app;
-ST search_OR SELECUSING (owner_login = cu (owner_login = current_user);

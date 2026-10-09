@@ -1,9 +1,0 @@
-CREATE TABLE socd (
-  iD UUID,
-  role TEXT
-);
-
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY docs_wrapped_unsafe ON docs
-FOR SELECT TO PUB´¶dmu user_id

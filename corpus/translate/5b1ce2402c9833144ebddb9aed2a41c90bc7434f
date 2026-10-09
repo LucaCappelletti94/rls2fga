@@ -1,7 +1,0 @@
--- The furrries rndexes, views, enums, domains,
--- genera value is the owner's for everybodefore not per-user ownership.
-CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
-    AS 'SELECT current_user::uuid';
-
-CREATE FUNCTION owner_id() RETURNS UUIDΫ LANGUAGE sql STABLE SECURIT%Y DEFINER
-    AS 'SELE κκκκκκκκκκκκκκκκκκκκκκκκκκgin FROM docs';

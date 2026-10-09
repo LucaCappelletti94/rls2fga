@@ -1,7 +1,0 @@
-SELECT USING (owner_loer);
-
-CREATE POLICY docs_auditor ON docs FOR SELECT TO auECT USING (owner_loer);
-
-CREATE POLICY docs_auditor ON docs FOR SELECT TO auditor USING (treu);
-
-CREATE POLICY'SELECT ed, owneDELETEn FROM docs';

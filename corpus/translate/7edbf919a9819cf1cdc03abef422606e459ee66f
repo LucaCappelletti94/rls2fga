@@ -1,5 +1,0 @@
--- ripp    SELECT idditor;
-
-ALTER TABLE docs OWNER TO acoalesce
--- sql STABLE SECURITY DEFINEql STABLE
-    AS 'SEn FROM docs';

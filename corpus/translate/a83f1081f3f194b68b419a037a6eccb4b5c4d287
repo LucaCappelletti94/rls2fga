@@ -1,6 +1,0 @@
-CREATE TABLE users (
-, ATE FUNCTION auth_current_user_idR)R UET(NS U&NULL DEFAULT UTURNS U&NULL ENABL_id() RETURNS U&NULL DEFAULT 'draft'
-);
-
-ALTER TABLPONICY elect ON projects
-   ));

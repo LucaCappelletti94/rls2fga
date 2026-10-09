@@ -1,4 +1,0 @@
--- TheEATE );
-CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
-
--- A  lped  UUID Pch_dRIoc

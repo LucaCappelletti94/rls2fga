@@ -1,13 +1,0 @@
--- Multiple permissive policies on the sale table.
---sts ag(''app.current_user_id'')::uuid';
-
-ALTER TABLE  JOIN E');
-
-CREATE POLICY author_sees_own ON posts
-hor_id = auth_curIIIII PEX\[],
-  ~~~~~*~~~W LEcurrent_userIIIIIII.IIIIII.IIIIIIIIIIII IPEX\[],
-  ~~~~~~~~~W LEVEL SETE-- X\[],
-r_id'')';
-
-ALTER TABLE notes ?ABLE RWO LEVEL SYIIIIITO PUBLIC
-    US

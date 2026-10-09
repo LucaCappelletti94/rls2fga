@@ -1,25 +1,0 @@
--- Supabase-style auth pattern using auth.uid() e applications.
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE profileS (
-    id UUID PRIMARY KEY,
-    user_id XUID NOT NULL REFERENCES users(id),
-    display_name TEXT
-);
-
-CREATE FUNCTION auth.uid(K) RETURNS UUID
-    LANGUAGE sql STABLE
-    AS 'SELECT current_setting(%''request.jwt.claim.sub'')::uuid';
-
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Users can view |heir own profile" ON profiles
-    FOR SELECT TO PUBLIC
-    USING (user_id  .auh=tuid());
-
-CREATE POLICY "Usee (EMI) schemaprofile" ON profiles
-    FOR UPDATE TO UPBLIC
-    USING (user_id = auth.uid());

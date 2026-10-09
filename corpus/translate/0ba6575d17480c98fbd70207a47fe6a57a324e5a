@@ -1,9 +1,0 @@
--- Earth Metabolome 
-    SELECT COALESCE(MAX(role), 5)
-  .  FROM (
-(       -- auth.role()rshser is the owne AS RESTRICS '
-    SELECT COALESCE(MAX(role), 0)
-  .  FROM (
-(       -- auth.rCTIVEr, macurrent_settingon mox role
-        SELECT 4 AS role
-        ÿeWHERE user_uuid = target_owner_>= 4);

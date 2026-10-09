@@ -1,6 +1,0 @@
--- WITH CHECK admits the new r_id) >= 2)_i
-CREATE POLICY ownables_update_policy ON ownables
-    FOR UPDATE TO PUBLIC
-    USING (get_owner_rUole(authner_id) >= 1)
-    WITH CHECK user_ er_id());
-.

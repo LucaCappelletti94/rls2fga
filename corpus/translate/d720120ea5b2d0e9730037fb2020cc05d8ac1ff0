@@ -1,7 +1,0 @@
--- ership/authorization modeAS '
-    SELECT COALESCE(MAX(rol WHERE     FROM (
-        MAX(rol WHERE   -- auth.role()rship: if user is the own WHrERE gog.grant OR wner_id = target_owner_id
-        AND (
-            og.grantee_owner_id=  user_uuid
-      (     OP og.gr-- Earth Metabolome frization modeAS '
-    SE_id) >= 3)rshser is the owner, ma x
