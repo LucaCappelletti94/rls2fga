@@ -577,6 +577,12 @@ pub(super) fn link_share_rows(plan: &mut TypePlan, share: &ShareRows<'_>) -> Rel
     link
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MembershipPolarity {
+    Grant,
+    Block,
+}
+
 /// Membership through a join table, bridged on the column the policy correlates.
 pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     exists_membership: &ExistsMembership,
@@ -586,11 +592,32 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     notes: &mut Vec<TranslationNote>,
     readability: &mut BTreeMap<TableId, JoinTableReadability>,
 ) -> UsersetExpr {
+    emit_membership(
+        exists_membership,
+        ctx,
+        table_plan,
+        all_types,
+        notes,
+        readability,
+        MembershipPolarity::Grant,
+    )
+}
+
+fn emit_membership<DB: DatabaseLike>(
+    exists_membership: &ExistsMembership,
+    ctx: &PatternCtx<'_, DB>,
+    table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
+    notes: &mut Vec<TranslationNote>,
+    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+    polarity: MembershipPolarity,
+) -> UsersetExpr {
     let ExistsMembership {
         join_table,
         pairs,
         user_column,
         extra_predicates,
+        caller_cast: _,
     } = exists_membership;
     let policy_name = ctx.policy_name;
     let db = ctx.db;
@@ -598,8 +625,26 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     let table_types = ctx.table_types;
     // The subquery reads `join_table` as the user, so its own RLS decides which
     // membership rows count.
-    let Some(read_scope) = noted_membership_read_scope(join_table, ctx, readability, notes) else {
-        return deny_expr(table_plan);
+    let open_scope = JoinTableReadability::Open;
+    let read_scope = if polarity == MembershipPolarity::Block {
+        let readable = lookup_table_id(db, join_table).is_some_and(|table| {
+            crate::generator::unrestricted::restricts_nothing_by_any_route(table, db)
+        });
+        if !readable {
+            notes.push(TranslationNote::ExpressionRefused {
+                policy: policy_name.to_string(),
+                reason: format!(
+                    "Blocklist table '{join_table}' is not provably free of row level security"
+                ),
+            });
+            return deny_expr(table_plan);
+        }
+        &open_scope
+    } else {
+        let Some(scope) = noted_membership_read_scope(join_table, ctx, readability, notes) else {
+            return deny_expr(table_plan);
+        };
+        scope
     };
     let Some(parent) = MembershipParent::resolve(pairs, join_table, ctx, table_plan, notes) else {
         return deny_expr(table_plan);
@@ -633,10 +678,20 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         Some((condition, context)) if !rows_unique => {
             if let Some(identity_cols) = resolve_row_identity(join_table, db) {
                 Some((condition.clone(), context.clone(), identity_cols))
-            } else if context.len() == 1 {
-                // A single carried value is a real row's value, so compressing the
-                // rows stays sound and at worst incomplete.
-                None
+            } else if let [column] = context.as_slice() {
+                if column.monotone || polarity == MembershipPolarity::Grant {
+                    None
+                } else {
+                    notes.push(TranslationNote::ExpressionRefused {
+                        policy: policy_name.to_string(),
+                        reason: format!(
+                            "the rows of '{join_table}' have no declared identity, and \
+                             a non-monotone clock comparison cannot be compressed into \
+                             one fact without risking a missed block"
+                        ),
+                    });
+                    return deny_expr(table_plan);
+                }
             } else {
                 notes.push(TranslationNote::ExpressionRefused {
                     policy: policy_name.to_string(),
@@ -661,7 +716,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
             let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
                 TypePlan::new_with_well_known(share_type.clone(), &table_plan.well_known)
             });
-            let key = membership_source_key(
+            let mut key = membership_source_key(
                 join_table,
                 &identity_cols,
                 user_column,
@@ -674,9 +729,15 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
                     inputs: &[],
                 }),
             );
+            let base = if polarity == MembershipPolarity::Block {
+                source_key_part(&mut key, "block");
+                blocked_relation()
+            } else {
+                member_relation()
+            };
             share_plan.membership_source_relation(
                 &key,
-                member_relation(),
+                base,
                 DirectSubject::ConditionalType {
                     type_name: table_plan.well_known.user.clone(),
                     condition: condition.clone(),
@@ -703,7 +764,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
             fk_cols: &parent.fk_cols(),
             share_type: &share_type,
         };
-        let reached = format!("{share_type}_member");
+        let reached = format!("{share_type}_{member_rel}");
         let witness_member = if parent.is_self(table_plan) {
             let link = link_share_rows(table_plan, &share);
             table_plan.ensure_computed(reached, share_reach(link, member_rel))
@@ -723,13 +784,19 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
             aggregate: !rows_unique,
         });
         let fk_cols = parent.fk_cols();
-        let key = membership_source_key(
+        let mut key = membership_source_key(
             join_table,
             &fk_cols,
             user_column,
             extra_predicates,
             gate.as_ref().map(MembershipSourceGate::from),
         );
+        let base = if polarity == MembershipPolarity::Block {
+            source_key_part(&mut key, "block");
+            blocked_relation()
+        } else {
+            member_relation()
+        };
         let member_rel = {
             let parent_plan = if parent.is_self(table_plan) {
                 &mut *table_plan
@@ -743,7 +810,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
                     condition: gate.condition.clone(),
                 },
             );
-            parent_plan.membership_source_relation(&key, member_relation(), subject)
+            parent_plan.membership_source_relation(&key, base, subject)
         };
         // On the guarded plan first, which is the order the renderer emits.
         let membership_source = TupleSource::ExistsMembership {
@@ -759,14 +826,97 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
         if let Some(parent_plan) = all_types.get_mut(parent_type) {
             parent_plan.add_source(membership_source);
         }
-        UsersetExpr::TupleToUserset {
-            tupleset: parent.bridge_from(table_plan, source_table),
-            computed: member_rel,
+        if polarity == MembershipPolarity::Block
+            && parent.is_self(table_plan)
+            && resolve_row_identity(source_table, db).is_some_and(|identity| {
+                identity
+                    .iter()
+                    .eq(parent.pairs.iter().map(|pair| &pair.outer_column))
+            })
+        {
+            UsersetExpr::Computed(member_rel)
+        } else {
+            UsersetExpr::TupleToUserset {
+                tupleset: parent.bridge_from(table_plan, source_table),
+                computed: member_rel,
+            }
         }
     };
     apply_membership_read_scope(
         membership, join_table, read_scope, ctx, table_plan, all_types, notes,
     )
+}
+
+pub(super) fn emit_blocked_set<DB: DatabaseLike>(
+    subtract: &[ExistsMembership],
+    ctx: &PatternCtx<'_, DB>,
+    table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
+    notes: &mut Vec<TranslationNote>,
+    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+) -> Option<UsersetExpr> {
+    let mut sets = Vec::with_capacity(subtract.len());
+    for membership in subtract {
+        let before = notes.len();
+        let set = emit_membership(
+            membership,
+            ctx,
+            table_plan,
+            all_types,
+            notes,
+            readability,
+            MembershipPolarity::Block,
+        );
+        if grants_nothing(&set, table_plan, &mut BTreeSet::new())
+            || notes
+                .iter()
+                .skip(before)
+                .any(|note| note.severity().diverges_from_database())
+        {
+            return None;
+        }
+        sets.push(set);
+    }
+    combine_union(sets)
+}
+
+pub(super) fn emit_membership_exclusion<DB: DatabaseLike>(
+    exclusion: &MembershipExclusion,
+    ctx: &PatternCtx<'_, DB>,
+    table_plan: &mut TypePlan,
+    all_types: &mut BTreeMap<TypeName, TypePlan>,
+    notes: &mut Vec<TranslationNote>,
+    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+) -> UsersetExpr {
+    let Some(base) = &exclusion.base else {
+        notes.push(TranslationNote::ExpressionRefused {
+            policy: ctx.policy_name.to_string(),
+            reason: "A blocklist exclusion requires a positive grant".to_string(),
+        });
+        return deny_expr(table_plan);
+    };
+    let base = translate_pattern(
+        &base.pattern,
+        ctx,
+        table_plan,
+        all_types,
+        notes,
+        readability,
+    );
+    let Some(subtract) = emit_blocked_set(
+        &exclusion.subtract,
+        ctx,
+        table_plan,
+        all_types,
+        notes,
+        readability,
+    ) else {
+        return deny_expr(table_plan);
+    };
+    UsersetExpr::Exclusion {
+        base: Box::new(base),
+        subtract: Box::new(subtract),
+    }
 }
 
 /// Reach `relation` on the share rows through `link`.

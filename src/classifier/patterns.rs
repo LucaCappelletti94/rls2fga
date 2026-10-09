@@ -327,6 +327,16 @@ pub struct MembershipJoinPair {
     pub outer_column: ColumnName,
 }
 
+/// A cast applied to the caller side of a membership's identity comparison.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallerCast {
+    /// The comparison's cast target, e.g. `uuid` or `integer`.
+    pub cast_type: String,
+    /// The identity form declared for the session attribute read, when one
+    /// exists and the comparison names a declared `CallerId` attribute.
+    pub declared_identity: Option<String>,
+}
+
 /// P4: EXISTS subquery membership: `EXISTS (SELECT 1 FROM members ...)`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExistsMembership {
@@ -340,6 +350,9 @@ pub struct ExistsMembership {
     /// Residual filter such as `role = 'admin'`, structured where a row
     /// image alone decides it.
     pub extra_predicates: ResidualPredicates,
+    /// The cast on the caller side of the identity match, when the written
+    /// comparison applies one.
+    pub caller_cast: Option<CallerCast>,
 }
 
 /// P5: Parent permission inheritance through a foreign key.
@@ -516,6 +529,15 @@ pub struct MembershipInCallerSet {
     pub source: SessionAttribute,
 }
 
+/// Correlated caller-identity memberships subtracted from a positive grant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MembershipExclusion {
+    /// The grant, absent only for a negative-only top-level restrictive clause.
+    pub base: Option<Box<ClassifiedExpr>>,
+    /// The blocked `P4` sets whose union is removed from the grant.
+    pub subtract: Vec<ExistsMembership>,
+}
+
 /// No known pattern matched.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnclassifiedExpr {
@@ -586,6 +608,8 @@ pub enum PatternClass {
     /// grant is a request-completed gate on the parent rather than a subject named by
     /// the row: the member value is not a person.
     P18MembershipInCallerSet(MembershipInCallerSet),
+    /// A correlated blocklist removed from a positive grant.
+    MembershipExclusion(MembershipExclusion),
     /// A call to a declared single-expression `LANGUAGE sql` function, replaced
     /// by its body with the call-site arguments substituted.
     ExpandedFunction(ExpandedFunction),
@@ -620,6 +644,12 @@ where
         .map_or(ConfidenceLevel::D, |lowest| {
             core::cmp::min(lowest, ConfidenceLevel::B)
         })
+}
+
+/// Confidence of the positive grant, or `A` for a restrictive exclusion.
+#[must_use]
+pub fn exclusion_confidence(base: Option<&ClassifiedExpr>) -> ConfidenceLevel {
+    base.map_or(ConfidenceLevel::A, |base| base.confidence)
 }
 
 impl From<CreatePolicyCommand> for PolicyCommand {

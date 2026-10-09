@@ -26,8 +26,9 @@ use sqlparser::ast::Expr;
 use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::{
     filter_policies_for_output, AbacAnd, ClassifiedExpr, ClassifiedPolicy, Composite,
-    ConfidenceLevel, ExpandedFunction, MembershipInCallerSet, ParentInheritance, PatternClass,
-    PolicyCommand, PolicyMode, RowValueInCallerSet, UnclassifiedExpr,
+    ConfidenceLevel, ExpandedFunction, MembershipExclusion, MembershipInCallerSet,
+    ParentInheritance, PatternClass, PolicyCommand, PolicyMode, RowValueInCallerSet,
+    UnclassifiedExpr,
 };
 use crate::classifier::policy_classifier::classify_expr;
 use crate::generator::model_generator::{
@@ -325,6 +326,15 @@ fn term_callers(classified: &ClassifiedExpr) -> Vec<TermCaller> {
             }
             PatternClass::P8Composite(Composite { parts, .. }) => {
                 leaves.extend(parts.iter().rev());
+                continue;
+            }
+            PatternClass::MembershipExclusion(MembershipExclusion { base, subtract }) => {
+                if !subtract.is_empty() && !found.contains(&TermCaller::Identity) {
+                    found.push(TermCaller::Identity);
+                }
+                if let Some(base) = base {
+                    leaves.push(base);
+                }
                 continue;
             }
             PatternClass::P6BooleanFlag(_)

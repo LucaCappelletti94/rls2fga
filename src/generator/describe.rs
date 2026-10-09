@@ -408,9 +408,9 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             fk_cols,
             user_col,
             parent_type,
+            relation,
             extra_predicates,
             gate,
-            relation,
         } => {
             let mut guards: Vec<Guard> = fk_cols
                 .iter()

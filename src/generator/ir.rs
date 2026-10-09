@@ -32,6 +32,8 @@ pub(crate) struct GateContextColumn {
     pub column: ColumnName,
     /// The compressing aggregate's direction, unused where no compression happens.
     pub witness: ContextWitness,
+    /// Whether the source comparison stays exact when rows compress.
+    pub monotone: bool,
 }
 
 /// The condition a temporal membership tuple names, with every column its context
@@ -141,7 +143,8 @@ pub(crate) enum TupleSource {
         user_col: ColumnName,
         /// Resolved from the table the columns reference, not from their names.
         parent_type: TypeName,
-        /// The relation the member tuple feeds, kept per source.
+        /// The relation the member tuple feeds, kept per source so positive
+        /// memberships and blocked sets stay separate.
         relation: RelationName,
         /// Residual predicate, structured where a row image alone decides it.
         extra_predicates: ResidualPredicates,
@@ -1148,8 +1151,8 @@ mod tests {
             join_table: table("members"),
             fk_cols: vec![ColumnName::from_stored("project_id")],
             user_col: ColumnName::from_stored("user_id"),
-            relation: member_relation(),
             parent_type: TypeName::canonicalized("projects"),
+            relation: member_relation(),
             extra_predicates: ResidualPredicates::new(vec![ResidualPredicate {
                 sql: "role = 'admin'".to_string(),
                 guard: None,
@@ -1160,6 +1163,24 @@ mod tests {
         };
         assert_ne!(base.dedup_key(), different_user.dedup_key());
         assert_ne!(base.dedup_key(), with_predicate.dedup_key());
+    }
+
+    #[test]
+    fn dedup_key_separates_a_membership_from_its_blocklist_subtraction() {
+        let make = |relation: RelationName| TupleSource::ExistsMembership {
+            join_table: table("blocks"),
+            fk_cols: vec![ColumnName::from_stored("doc_id")],
+            user_col: ColumnName::from_stored("user_id"),
+            parent_type: TypeName::canonicalized("docs"),
+            relation,
+            extra_predicates: ResidualPredicates::default(),
+            gate: None,
+        };
+        assert_ne!(
+            make(member_relation()).dedup_key(),
+            make(RelationName::canonicalized("blocked")).dedup_key(),
+            "a positive set and its subtraction must not collapse into one query"
+        );
     }
 
     #[test]
@@ -1245,6 +1266,7 @@ mod tests {
                 parameter: "expires_at".to_string(),
                 column: ColumnName::from_stored("expires_at"),
                 witness: ContextWitness::Latest,
+                monotone: true,
             }],
             aggregate: false,
         };
@@ -1305,6 +1327,7 @@ mod tests {
                     parameter: "expires_at".to_string(),
                     column: ColumnName::from_stored("expires_at"),
                     witness: ContextWitness::Latest,
+                    monotone: true,
                 }]
             } else {
                 Vec::new()

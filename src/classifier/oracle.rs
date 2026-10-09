@@ -7,7 +7,8 @@
 //!
 //! Doing that by hand is possible, since every field involved is public, and it is a
 //! trap. A refusal nests inside [`PatternClass::P5ParentInheritance`],
-//! [`PatternClass::P7AbacAnd`] and [`PatternClass::P8Composite`], so a walk that knows
+//! [`PatternClass::P7AbacAnd`], [`PatternClass::P8Composite`] and the base of
+//! [`PatternClass::MembershipExclusion`], so a walk that knows
 //! only the obvious one leaves the refusal in place and the model silently denies. An
 //! enclosing pattern also keeps the grade its refused part dragged it to, so
 //! `filter_policies_for_output` drops the whole clause even after the leaf is answered.
@@ -67,9 +68,9 @@ use crate::classifier::patterns::{
     composite_confidence, AbacAnd, ArrayMembership, AttributeCondition, BooleanFlag,
     CallerScalarEqualsConstant, ClassifiedExpr, ClassifiedPolicy, Composite, ConfidenceLevel,
     ConstantBool, ConstantInCallerSet, DirectOwnership, ExistsMembership, ExpandedFunction,
-    JsonbFieldOwnership, MembershipInCallerSet, NumericThreshold, ParentInheritance, PatternClass,
-    RoleNameInList, RowValueEqualsCallerScalar, RowValueInCallerSet, UnclassifiedExpr,
-    UncorrelatedMembership,
+    JsonbFieldOwnership, MembershipExclusion, MembershipInCallerSet, NumericThreshold,
+    ParentInheritance, PatternClass, RoleNameInList, RowValueEqualsCallerScalar,
+    RowValueInCallerSet, UnclassifiedExpr, UncorrelatedMembership,
 };
 
 /// Which clause of a policy an expression came from.
@@ -293,6 +294,13 @@ where
                 any |= consult_expr(part, policy_name, clause, oracle, answered);
             }
             any.then(|| composite_confidence(parts.iter()))
+        }
+        PatternClass::MembershipExclusion(MembershipExclusion { base, .. }) => {
+            match base.as_deref_mut() {
+                Some(base) => consult_expr(base, policy_name, clause, oracle, answered)
+                    .then(|| crate::classifier::patterns::exclusion_confidence(Some(base))),
+                None => None,
+            }
         }
         // The declared request-scoped shapes nest no expression, so nothing inside them
         // can hold a refusal the oracle has not seen.

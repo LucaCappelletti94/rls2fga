@@ -958,7 +958,7 @@ fn parenthesis_peeling_has_a_single_source_of_truth() {
 
 /// Every plain cast peel goes through the shared peeler.
 ///
-/// The two temporal readers inspect the cast type before recursing.
+/// Three readers inspect the cast type before recursing or in place of it.
 #[test]
 fn every_cast_peel_routes_through_the_shared_peeler() {
     let own_peels = fns_whose_body(|body| {
@@ -971,6 +971,7 @@ fn every_cast_peel_routes_through_the_shared_peeler() {
             !found.ends_with(": unwrap_cast_or_nested")
                 && !found.ends_with(": conjunct_reads_only_the_row")
                 && !found.ends_with(": literal_uses_session_against_zoned_column")
+                && !found.ends_with(": cast_chain")
         })
         .collect();
 
@@ -978,6 +979,7 @@ fn every_cast_peel_routes_through_the_shared_peeler() {
         "unwrap_cast_or_nested",
         "conjunct_reads_only_the_row",
         "literal_uses_session_against_zoned_column",
+        "cast_chain",
     ] {
         assert!(
             own_peels
@@ -988,7 +990,7 @@ fn every_cast_peel_routes_through_the_shared_peeler() {
     }
     assert!(
         unexpected.is_empty(),
-        "a cast is peeled outside the three readers: {unexpected:#?}"
+        "a cast is peeled outside the four readers: {unexpected:#?}"
     );
 }
 

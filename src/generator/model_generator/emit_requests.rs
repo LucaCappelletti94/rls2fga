@@ -251,6 +251,7 @@ pub(crate) struct TemporalGate {
     pub(crate) column: ColumnName,
     pub(crate) fragment: String,
     pub(crate) witness: ContextWitness,
+    pub(crate) monotone: bool,
 }
 
 /// Turn a residual's temporal comparisons (`col > now()`) into condition fragments
@@ -281,6 +282,7 @@ pub(crate) fn temporal_gates<DB: DatabaseLike>(
             ),
             column: request.column.clone(),
             witness: request.operator.context_witness(),
+            monotone: request.operator.is_monotone(),
             parameter,
         });
     }
@@ -343,6 +345,7 @@ pub(crate) fn declare_temporal_condition<DB: DatabaseLike>(
             parameter: gate.parameter.to_string(),
             column: gate.column,
             witness: gate.witness,
+            monotone: gate.monotone,
         })
         .collect();
     Some((condition, context))
@@ -396,6 +399,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
                 pairs,
                 user_column: member_column,
                 extra_predicates,
+                caller_cast: _,
             },
         separator,
         source,
@@ -497,6 +501,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
             parameter: gate.parameter.to_string(),
             column: gate.column,
             witness: gate.witness,
+            monotone: gate.monotone,
         })
         .collect();
     // The gate rides the share type, keyed on the share row, so two viewers of one

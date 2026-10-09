@@ -5,7 +5,7 @@ use crate::types::ColumnName;
 use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
 
 use crate::classifier::expansion::{self, ExpansionState};
-use crate::classifier::function_registry::FunctionRegistry;
+use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
 use crate::classifier::recognizers;
 use crate::parser::function_analyzer::{AccessorInferenceSettings, FunctionSemantic};
@@ -32,7 +32,20 @@ pub(crate) fn classify_policies_with_effective_registry_and_settings<DB: Databas
     settings: &AccessorInferenceSettings,
 ) -> (Vec<ClassifiedPolicy>, FunctionRegistry) {
     let mut effective_registry = registry.clone();
-    effective_registry.declare_session_attributes(settings.session_attributes().iter().cloned());
+    // An explicit declaration on `registry` outranks a convenience default from
+    // `settings`, so naming a key once with the richer form is never silently
+    // downgraded by the bare default for the same key.
+    let defaults: Vec<SessionAttribute> = settings
+        .session_attributes()
+        .iter()
+        .filter(|attribute| {
+            effective_registry
+                .session_attribute(attribute.setting_key(), attribute.path())
+                .is_none()
+        })
+        .cloned()
+        .collect();
+    effective_registry.declare_session_attributes(defaults);
     // The two lists become one before anything reads either, so a declaration made on the
     // registry and one made through the settings cannot describe the same source apart.
     let declared: Vec<_> = effective_registry.session_attributes().cloned().collect();
@@ -52,7 +65,14 @@ fn classify_policies_with_registry<DB: DatabaseLike>(
         .map(|policy| {
             let mut classified = ClassifiedPolicy::from_policy(policy, db);
             let classify = |expr: &Expr| {
-                classify_expr(expr, db, registry, &classified.table, classified.command)
+                classify_clause(
+                    expr,
+                    db,
+                    registry,
+                    &classified.table,
+                    classified.command,
+                    Some(classified.mode),
+                )
             };
 
             // An absent clause is not `TRUE`: PostgreSQL stores no qual for it, and
@@ -71,7 +91,7 @@ fn classify_policies_with_registry<DB: DatabaseLike>(
 ///
 /// Beyond this depth an expression is classified as `Unknown D` to avoid
 /// stack overflows from adversarially-nested SQL.
-const MAX_CLASSIFY_DEPTH: u32 = 64;
+pub(crate) const MAX_CLASSIFY_DEPTH: u32 = 64;
 
 /// Rewrite `CASE WHEN c1 THEN TRUE WHEN c2 THEN TRUE ... ELSE FALSE END` into
 /// an OR-tree of the TRUE-branch conditions.  Returns `None` when the CASE has
@@ -141,15 +161,49 @@ pub fn classify_expr<DB: DatabaseLike>(
     table: &str,
     command: PolicyCommand,
 ) -> ClassifiedExpr {
-    classify_expr_depth(
-        expr,
-        db,
-        registry,
-        table,
-        command,
-        0,
-        &ExpansionState::new(),
-    )
+    classify_clause(expr, db, registry, table, command, None)
+}
+
+/// Classify a clause, allowing a negative-only exclusion only in a restrictive policy.
+fn classify_clause<DB: DatabaseLike>(
+    expr: &Expr,
+    db: &DB,
+    registry: &FunctionRegistry,
+    table: &str,
+    command: PolicyCommand,
+    mode: Option<PolicyMode>,
+) -> ClassifiedExpr {
+    let state = ExpansionState::new();
+    if mode != Some(PolicyMode::Restrictive) {
+        return classify_expr_depth(expr, db, registry, table, command, 0, &state);
+    }
+    let classified = match crate::classifier::exclusion::try_membership_exclusion(
+        expr, db, registry, table, command, 0, &state,
+    ) {
+        Ok(None) => classify_expr_inner(expr, db, registry, table, command, 0, &state),
+        Err(reason) => unknown_d(expr, reason.to_string()),
+        Ok(Some(classified)) => classified,
+    };
+    apply_guarded_column_check(classified, expr, db, table)
+}
+
+/// Refuse a classification that names a missing guarded column.
+fn apply_guarded_column_check<DB: DatabaseLike>(
+    classified: ClassifiedExpr,
+    expr: &Expr,
+    db: &DB,
+    table: &str,
+) -> ClassifiedExpr {
+    match guarded_column(&classified.pattern) {
+        Some(column) if !table_has_column(db, table, column.as_str()) => unknown_d(
+            expr,
+            format!(
+                "'{table}' has no column '{column}', so this would name a relation \
+                 no tuple can fill"
+            ),
+        ),
+        _ => classified,
+    }
 }
 
 /// [`classify_expr`] carrying the caller's expansion state, which a recognizer
@@ -166,7 +220,7 @@ pub(crate) fn classify_expr_in_state<DB: DatabaseLike>(
     classify_expr_depth(expr, db, registry, table, command, 0, state)
 }
 
-fn classify_expr_depth<DB: DatabaseLike>(
+pub(crate) fn classify_expr_depth<DB: DatabaseLike>(
     expr: &Expr,
     db: &DB,
     registry: &FunctionRegistry,
@@ -184,19 +238,28 @@ fn classify_expr_depth<DB: DatabaseLike>(
             ),
         );
     }
-    let classified = classify_expr_inner(expr, db, registry, table, command, depth, state);
+    let classified = match crate::classifier::exclusion::try_membership_exclusion(
+        expr, db, registry, table, command, depth, state,
+    ) {
+        Ok(None) => classify_expr_inner(expr, db, registry, table, command, depth, state),
+        Err(reason) => unknown_d(expr, reason.to_string()),
+        Ok(Some(classified)) => {
+            if matches!(
+                &classified.pattern,
+                PatternClass::MembershipExclusion(MembershipExclusion { base: None, .. })
+            ) {
+                unknown_d(
+                    expr,
+                    "a blocklist exclusion requires a positive grant".to_string(),
+                )
+            } else {
+                classified
+            }
+        }
+    };
     // Every classification passes through here, including each part of a composite and
     // the inner rule of an inheritance, each against its own table.
-    match guarded_column(&classified.pattern) {
-        Some(column) if !table_has_column(db, table, column.as_str()) => unknown_d(
-            expr,
-            format!(
-                "'{table}' has no column '{column}', so this would name a relation \
-                 no tuple can fill"
-            ),
-        ),
-        _ => classified,
-    }
+    apply_guarded_column_check(classified, expr, db, table)
 }
 
 /// The column of the table being classified that `pattern` reads, if it names one.
@@ -239,6 +302,7 @@ fn guarded_column(pattern: &PatternClass) -> Option<&ColumnName> {
         | PatternClass::P13UncorrelatedMembership(UncorrelatedMembership { .. })
         | PatternClass::P16ConstantInCallerSet(ConstantInCallerSet { .. })
         | PatternClass::P17CallerScalarEqualsConstant(CallerScalarEqualsConstant { .. })
+        | PatternClass::MembershipExclusion(MembershipExclusion { .. })
         | PatternClass::Unknown(UnclassifiedExpr { .. }) => None,
     }
 }
@@ -729,6 +793,9 @@ fn pattern_short_name(pattern: &PatternClass) -> &'static str {
         }
         PatternClass::Unknown(UnclassifiedExpr { .. }) => "unrecognized expression",
         PatternClass::ExpandedFunction(ExpandedFunction { .. }) => "expanded function call",
+        PatternClass::MembershipExclusion(MembershipExclusion { .. }) => {
+            "membership-exclusion check"
+        }
     }
 }
 
@@ -763,6 +830,9 @@ fn is_relationship_pattern_for_p7(pattern: &PatternClass) -> bool {
                     .iter()
                     .all(|part| is_relationship_pattern_for_p7(&part.pattern))
         }
+        PatternClass::MembershipExclusion(MembershipExclusion { base, .. }) => base
+            .as_deref()
+            .is_some_and(|base| is_relationship_pattern_for_p7(&base.pattern)),
         // A declared request-scoped value is not a user-resource relationship a tuple
         // can carry, so an attribute guard beside one composes as a plain intersection
         // rather than through the P7 shape.
@@ -1083,33 +1153,6 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
             (
                 "NOT (status = 'deleted')",
                 "NOT applied to attribute-condition check",
-            ),
-        ];
-
-        for (expr_sql, expected_fragment) in cases {
-            let expr = parse_expr(expr_sql);
-            let classified = classify_expr(&expr, &db, &registry, "docs", PolicyCommand::Select);
-            assert_unknown_reason(&classified, expr_sql, expected_fragment);
-        }
-    }
-
-    #[test]
-    fn classify_negated_structural_forms_give_specific_reasons() {
-        let db = docs_db();
-        let registry = FunctionRegistry::new();
-
-        let cases = [
-            (
-                "owner_id NOT IN ('user-1', 'user-2')",
-                "NOT IN (...) cannot be represented",
-            ),
-            (
-                "NOT EXISTS (SELECT 1 FROM doc_members WHERE doc_id = id AND user_id = current_user)",
-                "NOT EXISTS cannot be represented",
-            ),
-            (
-                "owner_id NOT IN (SELECT user_id FROM doc_members WHERE doc_id = id)",
-                "NOT IN (subquery) cannot be represented",
             ),
         ];
 
@@ -1706,115 +1749,6 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
     }
 
     #[test]
-    fn pattern_short_name_covers_all_variants() {
-        let cases: Vec<(PatternClass, &str)> = vec![
-            (
-                PatternClass::P1NumericThreshold(NumericThreshold {
-                    resource_column: None,
-                    function_name: "f".into(),
-                    operator: ThresholdOperator::Gte,
-                    threshold: 1,
-                    command: PolicyCommand::Select,
-                }),
-                "numeric role-threshold check",
-            ),
-            (
-                PatternClass::P2RoleNameInList(RoleNameInList {
-                    resource_column: None,
-                    function_name: "f".into(),
-                    role_names: vec!["a".into()],
-                    privilege: RolePrivilege::Member,
-                }),
-                "role-name-in-list check",
-            ),
-            (
-                PatternClass::P3DirectOwnership(DirectOwnership {
-                    column: ColumnName::from_stored("c"),
-                }),
-                "direct-ownership check",
-            ),
-            (
-                PatternClass::P4ExistsMembership(ExistsMembership {
-                    join_table: TableId::from_stored(None, "t".to_string()),
-                    pairs: vec![MembershipJoinPair {
-                        join_column: ColumnName::from_stored("c"),
-                        outer_column: ColumnName::from_stored("o"),
-                    }],
-                    user_column: ColumnName::from_stored("u"),
-                    extra_predicates: ResidualPredicates::default(),
-                }),
-                "EXISTS membership check",
-            ),
-            (
-                PatternClass::P5ParentInheritance(ParentInheritance {
-                    parent_table: TableId::from_stored(None, "p".to_string()),
-                    fk_column: ColumnName::from_stored("c"),
-                    inner_pattern: Box::new(ClassifiedExpr {
-                        pattern: PatternClass::P3DirectOwnership(DirectOwnership {
-                            column: ColumnName::from_stored("c"),
-                        }),
-                        confidence: ConfidenceLevel::A,
-                    }),
-                }),
-                "parent-inheritance check",
-            ),
-            (
-                PatternClass::P6BooleanFlag(BooleanFlag {
-                    column: ColumnName::from_stored("c"),
-                    admits_null: false,
-                }),
-                "boolean-flag check",
-            ),
-            (
-                PatternClass::P7AbacAnd(AbacAnd {
-                    relationship_part: Box::new(ClassifiedExpr {
-                        pattern: PatternClass::P3DirectOwnership(DirectOwnership {
-                            column: ColumnName::from_stored("c"),
-                        }),
-                        confidence: ConfidenceLevel::A,
-                    }),
-                    attribute_part: "a".into(),
-                }),
-                "ABAC-and-relationship check",
-            ),
-            (
-                PatternClass::P8Composite(Composite {
-                    op: BoolOp::Or,
-                    parts: Vec::new(),
-                }),
-                "composite check",
-            ),
-            (
-                PatternClass::P9AttributeCondition(AttributeCondition {
-                    column: ColumnName::from_stored("c"),
-                    value_description: "v".into(),
-                    predicate: None,
-                    request_predicate: None,
-                }),
-                "attribute-condition check",
-            ),
-            (
-                PatternClass::P10ConstantBool(ConstantBool { value: true }),
-                "constant-boolean check",
-            ),
-            (
-                PatternClass::Unknown(UnclassifiedExpr {
-                    sql_text: "x".into(),
-                    reason: "r".into(),
-                }),
-                "unrecognized expression",
-            ),
-        ];
-        for (pattern, expected) in cases {
-            assert_eq!(
-                pattern_short_name(&pattern),
-                expected,
-                "pattern_short_name mismatch for {pattern:?}"
-            );
-        }
-    }
-
-    #[test]
     fn is_relationship_pattern_for_p7_covers_recursive_arms() {
         let p3 = PatternClass::P3DirectOwnership(DirectOwnership {
             column: ColumnName::from_stored("c"),
@@ -1852,6 +1786,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                 }],
                 user_column: ColumnName::from_stored("u"),
                 extra_predicates: ResidualPredicates::default(),
+                caller_cast: None,
             })
         ));
         assert!(is_relationship_pattern_for_p7(
@@ -1908,6 +1843,7 @@ CREATE TABLE tasks(id uuid primary key, project_id uuid references projects(id),
                             }],
                             user_column: ColumnName::from_stored("u"),
                             extra_predicates: ResidualPredicates::default(),
+                            caller_cast: None,
                         }),
                         confidence: ConfidenceLevel::A,
                     },

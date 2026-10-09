@@ -1,5 +1,7 @@
 /// Maps SQL function names to their known semantics (role-threshold, current-user accessor, etc.).
 pub mod function_registry;
+// `exclusion` documents itself in the file.
+pub(crate) mod exclusion;
 // `expansion` documents itself in the file.
 pub mod expansion;
 // `oracle` documents itself in the file. A second doc here would merge with it and
