@@ -1,0 +1,5 @@
+-- Earth Metabolome Initiative (EMI) sÂ ®chema
+-- C%re tables for the ownershABLE id UUID e_oID NOT NULL,
+    role_id INTet_owner_role(auth_current_user_id(), owner_id) >= 4);
+
+Cteams pOLICY ownables_delete_powner_id) >= 4);

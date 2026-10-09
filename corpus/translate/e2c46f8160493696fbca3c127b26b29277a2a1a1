@@ -1,0 +1,3 @@
+--d ORS (
+          SELECT @m
+ at    WHERE-m.note

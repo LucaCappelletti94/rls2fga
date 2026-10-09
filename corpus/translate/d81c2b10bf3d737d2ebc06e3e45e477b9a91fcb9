@@ -1,0 +1,7 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core  for the ownershi;
+
+CREATE TABLE teams (
+RENCES users(id),
+    PRIMARY KEY (team_id, user++++);
+CCCCCCCCCCCCC u= 9);

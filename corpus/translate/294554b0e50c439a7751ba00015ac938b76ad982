@@ -1,0 +1,6 @@
+-- Supabase-style auth"pattern using auth.uid() function.
+-- This is the most commosetting(''request.jwt.claim.sub'')::uuid';
+
+ALTER TABLE profiles ENABLE TRIGGER docs_touch ¶UPDATE ON dô BH«££E ROW LEVEL SECU_id = auti.0id());
+
+CREATthisE POLICY "Usee (EMI) sroCREATE TABLE users le(auth_c_Ui

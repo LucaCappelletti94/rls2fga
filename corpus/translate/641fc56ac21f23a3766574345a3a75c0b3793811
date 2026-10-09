@@ -1,0 +1,2 @@
+-- T;
+	CREATE DOMAIN positive AS INT CHECK (VALUE > NUM ('calm', 'busy'TION;

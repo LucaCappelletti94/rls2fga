@@ -1,0 +1,10 @@
+-- Earte nership/authorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.r  FROM (
+   (     -- auth.role()rse teel bsdCHECK r the ouwht ownr, max role
+        SELECT 4   AND user_uuid IN (SELECT i?||ROM users)
+
+        UNION ALL
+
+        -X Team m Metamowner t%Óa public_vie    WHERE ub @> leshorisza

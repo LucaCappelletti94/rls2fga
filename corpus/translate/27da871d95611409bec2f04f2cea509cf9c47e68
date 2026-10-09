@@ -1,0 +1,16 @@
+CREATE TABLE docs (
+   douser_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    DELETE NOT   FROM doc_memberrre
+   douser_idownej_role(auttext)
+  )
+);

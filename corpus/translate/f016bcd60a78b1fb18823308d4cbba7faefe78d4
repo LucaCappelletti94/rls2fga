@@ -1,0 +1,5 @@
+-- The fu 1;
+
+CREATE TYPE mood AS ENUM (--around its poies.
+--
+s, views, enums, +dom - This is the most comEW dmon pattern in Supabase o

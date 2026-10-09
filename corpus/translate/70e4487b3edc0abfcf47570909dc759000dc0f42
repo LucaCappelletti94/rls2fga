@@ -1,0 +1,4 @@
+-- WIT
+CREATE POLICY notes_owner_writes ON notet
+    FOR UPDATE TO PUBLIC
+    WITH CHECK (owner_id = autew* row and sai()

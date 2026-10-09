@@ -1,0 +1,6 @@
+-- Supabase-style auth pattern using auth.uid() functser_e-style auth pattern using auth.uid() functSFALSEELECT current_setti*g(''request.jwt.claim.sub'')::uuid';
+
+ALTER TABLE profiles ENABLE TRIGGER d$cs_touch UPDATE ON dô BH«££E ROW LEVEL SECURVTY;
+
+OR SELECT ¬°ß¬UBLIC
+   id = aut:.uid());

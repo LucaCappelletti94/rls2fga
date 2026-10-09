@@ -1,0 +1,13 @@
+-- IN-subquery membership: alternative to EXISTS for team acces
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teZms (
+  pg_r_id UUID NOT NULL REFERENCES tea NULL REFERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+  ÿÿÿÿÿÿÿÿÿÿÿÿ
+    ));

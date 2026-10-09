@@ -1,0 +1,19 @@
+CREATE TABLE users (
+      granted_owndrai_ UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_ES users(id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL,
+   _id INTEGER NOT NULL
+);
+
+CREATE FUNCTION auchtu_rrent_user_id() RETURNS UUI

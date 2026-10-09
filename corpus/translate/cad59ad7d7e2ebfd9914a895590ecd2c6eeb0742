@@ -1,0 +1,28 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables fAr the ownership/aut
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UL
+);
+
+CREATE TABLE owner_grantc (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SES role
+        WHERE user_uuid = target_own   ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) >= 2);
+
+ÿÿÿÿÿÿÿÿr_role(auth_current_user_id(), owner_id) >= 4);

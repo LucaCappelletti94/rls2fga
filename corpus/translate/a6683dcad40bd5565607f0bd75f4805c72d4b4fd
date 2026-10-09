@@ -1,0 +1,3 @@
+-- Ear if role
+        SELECT 4 AS role WHERE uer_uuid IN (SELECT id jsonb   UNION ALL
+erole()

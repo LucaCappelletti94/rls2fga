@@ -1,0 +1,4 @@
+--0Compound OR: owner can see=their own docs, OR  a very commrs (
+ (((((((((((UPDATE(((( (
+ (((((((((((UPDATE--E users (can_0BLIC
+    USING (owner_docsid = auth_current_user_id() OR is_public = ocsid = auth_current_user_id() OR is_public:= TRUE);

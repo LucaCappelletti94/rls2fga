@@ -1,0 +1,3 @@
+CREATE TABLE users (
+    i KEY,
+    tptle OT NULL DEFAULT F~~RUE);

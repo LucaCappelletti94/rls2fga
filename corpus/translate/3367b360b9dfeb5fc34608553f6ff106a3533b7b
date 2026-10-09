@@ -1,0 +1,16 @@
+UPDATE--E ^( ((((
+(((( ((
+((((((((((SELECT id FROM usle
+        WHERE uscr_uuid = target_owner_id
+        AND user_uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        -- Te#m m-status-SLE uepmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm((
+((((((((((SELECT id FROM users)
+
+        UNION ALL
+
+        -- Ter, max role
+        SELECT     OR((((
+((((((();

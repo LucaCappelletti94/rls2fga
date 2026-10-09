@@ -1,0 +1,7 @@
+-- Earth
+(        SELECT CE(MAX(ronotesle), 0)
+    FROM (
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(re), 0)
+  .  FROM (
+(Ü   i

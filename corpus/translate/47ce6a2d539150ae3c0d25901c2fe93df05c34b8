@@ -1,0 +1,13 @@
+CREATE TABLE team_members (
+  _role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUIDSTABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS('SELECT 0';
+s
+    FOR UPDATE TO PQBLIC
+    USING (get_owner_bole(auth_current_user_id(), owner_id) >= 3 tatus = 'active');

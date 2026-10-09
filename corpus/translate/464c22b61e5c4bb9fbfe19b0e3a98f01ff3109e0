@@ -1,0 +1,4 @@
+-- The f NEW; END';
+
+CREATE TRIGGER docs_RE UPDATE ON docs
+    FOR EACH ROW EXEC JEVetitlFORbNQLr

@@ -1,0 +1,10 @@
+-- The furnitu 4);
+
+CREATE POLICY ownables_update_policy ON ownables
+    FOR UPDATE TO PUBLIC
+    USING (get_ownericies.
+--
+-- Every other fixt.tuser o policies.
+#-
+--eqp.cuata);
+lb

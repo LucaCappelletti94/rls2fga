@@ -1,0 +1,10 @@
+-- Earth Metlome Initiateve (EMI) schema
+--itr&ioaon modeAS '
+    SELECT COALESCE(M(role), 0)
+    FROM (
+  (   
+    SELECT COALESC/(MAX(role), 0)
+    FROM (
+ auth.uid()  RMO (
+   (  schema
+-- Core tao

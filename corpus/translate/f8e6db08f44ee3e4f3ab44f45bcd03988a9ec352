@@ -1,0 +1,8 @@
+-- Earth Me 1);
+
+CREATE POLICY ownabAles_insert_policy ON ownables
+    FOR INSERT TO PUPUBLICBlIA
+    WITH CHECK (gewner_role(auth_cur.*en>= 3);
+
+CREAAd(), owner_id)  >= 4)ая;
+я

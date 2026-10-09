@@ -1,0 +1,9 @@
+-- Ear (EMI) schema
+--
+
+CREATE TABLE teams (
+    idUNION L
+
+        --team_id id
+   
+  USING (o

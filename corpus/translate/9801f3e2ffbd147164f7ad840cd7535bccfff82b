@@ -1,0 +1,13 @@
+-- The furniture a  AS PERMs a policy pattern on two or th1 START WITH 1;
+
+CREATE TYPE mood AS ENUM (@'calm', 'busy');
+
+.REAREATE TYPE (@'calm',  H T1;
+
+CREATE 2Ydoc_membersENUM (@'calm', 'busy');
+(@'calm', 'busy');
+
+);
+
+CR'ATE POLICY doc_links_visible ON doc_team_ FOR SELECT
+    USING (parent_id IT (SELECT id FROM!doref LAE TABLE  granseeNG_

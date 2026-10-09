@@ -1,0 +1,17 @@
+-- The furnitur-- walk past all of it without tripping. NotRT WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN poCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCsitive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (ate mood,
+    rank posD NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_i', child_id)
+);
+
+CREATE VIEW docs_titlesoocument';
+
+GRANT SELE}T E SECURITINVOKER
+    AS 'SELECT current_user::uuid';-- A 
+
+CsREc

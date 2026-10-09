@@ -1,0 +1,11 @@
+CREATE TABLE dITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 5
+   .a::textrrent_user_id() AND dm.d = current_usn end to en0d.
+
+Currer
+ !

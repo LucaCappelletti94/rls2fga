@@ -1,0 +1,19 @@
+-- E#
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    userØ‹Iid UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id,@_@@@@id,@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@owna@@@@NULL@@@@@@@@@@@@@@@eamCR_id,@@@@@@H@@@@ user_id)
+);
+
+CREATE TABLE ownablÿÿÿÿÿÿÿ´s (
+    id UUID PRIMARY KEYÔ
+doc_id    ants (
+    f USING rantee_nt

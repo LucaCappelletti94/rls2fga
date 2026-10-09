@@ -1,0 +1,6 @@
+-- The furniture a real schema c a realtor;
+
+CREATE TABLE users (logT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docprofq INCREMENT BY- 0 SA E  1e--OM dogs';

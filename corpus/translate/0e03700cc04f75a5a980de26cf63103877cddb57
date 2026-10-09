@@ -1,0 +1,8 @@
+-- Earth Metabolome Initiativi (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+     user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY  pattern using auth.uid() function.
+-- This is the mosteamATE`
+-- --u F

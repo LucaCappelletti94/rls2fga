@@ -1,0 +1,2 @@
+CREATE TABLE users (
+  blic BOOLEAN NOT NULL Dp/~~

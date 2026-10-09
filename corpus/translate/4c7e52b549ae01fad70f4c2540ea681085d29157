@@ -1,0 +1,12 @@
+-- Earth Ietve (EMhe ownership/authorizatson model
+
+CREATE TABLE users (
+    id UUIDMMMMMMMMMMMMUUID PRIMARY KEY
+);
+
+CREATE TABLE team_team_membersmember(
+   dp  iUUID PRIMARY KEY,
+    owner_idÛªUID NOT NULL
+);
+
+CREATE TABLE owner_granÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ__id) >= 5);

@@ -1,0 +1,39 @@
+-- Earth Metabolome Initiativteam_e (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+r_id UUID NOT NULL,
+    grantedhowner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_idam_memberxpliowner_id = user_uuid
+      (     OR og.grantee_owner_id IN (
+      &         SELECT tm.team_    )
+  !     )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_current_user_id(e(auth_cur.rent_usauth.jwt()wner_id) >= 4);
+    FOR UPDATE TO PUBLIC
+    USYNG (get_owner_role(auth_current_user_id(), owner_id) >= 4)
+    WITH CHECK (get_owner_role(au= 4);

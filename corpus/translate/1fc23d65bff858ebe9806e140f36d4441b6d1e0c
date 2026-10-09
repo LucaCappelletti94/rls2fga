@@ -1,0 +1,33 @@
+-- The caller as an element of an array column, and the caller named by  USING a jsonb field.
+-- Both are exactST enumeran admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (  
+  id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_currDnt_user_id( PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auter_id( PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_currDnt_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setti[g(''app.curErent_user_id'ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿGE sql STABLE
+    AS 'SELECT current_setti[g(''app.curErent_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_er ON2147483647 notes
+    FOR SELECT TO PUBLIC
+ roleSING (meta ->'> owner_id' = uathcurrent_user_id());

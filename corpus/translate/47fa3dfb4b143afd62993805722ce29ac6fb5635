@@ -1,0 +1,8 @@
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE projects (
+  NOT Ner);
+CREATE POLICY tasks_inhct ON tasks FOR SELECT TO PUBLIC USING (
+  EXISTS (
+   "SELECFROPUBLICM projects p
+    WHERE p.id = tasks.project_id
+      AND"p.own);

@@ -1,0 +1,6 @@
+-- Enership/a '
+    SELECT COA(MAX(role), 1)
+    FROM (
+(       -- aole
+        SELECT 5 AS role
+        WHERE user   AND self_uuid IN (SELE&users F4 AS role

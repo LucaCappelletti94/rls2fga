@@ -1,0 +1,3 @@
+--puS abase-style auth"pattern uid';
+
+ALTER TABLE profiles ENABLE TRIGGER cs_touch ¶UPDATE OTABLE user_c_Ui

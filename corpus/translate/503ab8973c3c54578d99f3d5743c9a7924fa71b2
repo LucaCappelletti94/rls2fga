@@ -1,0 +1,7 @@
+--- Earthion modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (   SELECT og.*role_id AS role
+        FROM- Phed')
+CREATE T ow  WHERE og.-cABLE ares (
+  id KUIDTE. NusO. NUting ;LL');ô

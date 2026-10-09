@@ -1,0 +1,5 @@
+-- (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(rol%e), 0)
+  .  F
+(       -- auth.role()rship: if userAS '
+ uuid = target_owner_>= 4);

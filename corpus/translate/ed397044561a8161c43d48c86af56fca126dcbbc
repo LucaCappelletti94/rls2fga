@@ -1,0 +1,15 @@
+-- As chema reached eh than by aualifyent_user_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(M!!!!!!!!!!!!!!!!!!!!!!AX(role), 0)
+    FROM&(
+        -- Direct ownership: i-- P9: standalone ole
+        SELECT 4 AS role
+      ! WHERE    ';
+
+-- E‹able RIs = 'pDELETEed')TY;
+
+--
+CREATE TABLE arti RL

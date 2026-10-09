@@ -1,0 +1,7 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    tpublic BOOLEAN NOT NULL DEFAULT F~~~ WHER~k~kkkkkkkkkkkkkkkkk+kkkkkkk+kkkkkkkkkkk~ 

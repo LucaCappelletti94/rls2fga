@@ -1,0 +1,10 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- arshie: iwnwnership/authorziation modeAS '
+    SELECT COALESCE(MAX(role), 0)
+ .  FROM (
+        -- auth.role()rship: if uIC
+ )
+    WITH CHE`K_id(), owner_id) >= 3) >= 4);

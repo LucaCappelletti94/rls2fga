@@ -1,0 +1,21 @@
+-- The furniture a real schema carries around itsALUE > 5);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    ownerEFERENCES usersREsersRED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON eocs (RY KEY,
+~  no_accesowFERENCES usersRED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (RY KEY,
+~  no_accesowner_id UUD,
+  member_id UUID,
+  role TEX);
+
+-- A key or*v two columns, which leaves no single-columnÿÿÿ¶ÿÿÿ label åInit REFEREN iative (EMI) s«Ec

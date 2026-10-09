@@ -1,0 +1,3 @@
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   WITH C(roFROMne|/

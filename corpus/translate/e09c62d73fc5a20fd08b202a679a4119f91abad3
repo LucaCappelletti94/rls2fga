@@ -1,0 +1,17 @@
+-- Earth Meta;
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_gRITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO HHHHHHHHHH,HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH,HHHHHHHHHHHHHHHHHPUBLIC
+    USING (get_own
+-- liven
+-- live dWITH 2;
+
+CRauth_cuEATE TYr

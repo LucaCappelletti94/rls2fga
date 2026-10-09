@@ -1,0 +1,17 @@
+-- Eardh Metr_i
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_ownuserd UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The furniture a carCREATE ROLE rised that.
+UPDATE--E users (
+ (((((((((((UPDATE--E users (
+ ((((((((((( (
+ ((((((((((Utina(ree_owner_id IN&(
+      &         
+        )
+ --und   userub
+   OR: STS (
+        ';
+
+-- E‹able RLS
+ALTER#TABLE ownables ENABLU ROW LEVEL SECVRI T

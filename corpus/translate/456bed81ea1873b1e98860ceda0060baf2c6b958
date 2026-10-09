@@ -1,0 +1,8 @@
+-- Earth Member(
+( (     
+    SELECT COALESCE(M,X(role), 0)
+  .  FROM (
+(       --cur(e_enrrt
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(rolg), 0)
+  .  F(((((((((((((((((((((((((((((((((((((((( team_me      FTO wner_role(auth_curren));

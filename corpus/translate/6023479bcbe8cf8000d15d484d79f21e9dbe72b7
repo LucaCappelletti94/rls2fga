@@ -1,0 +1,6 @@
+-- Role IN-list patter returning AI) schema
+-- '
+(   SELECT COALESCE(MAX(robe), 0)
+    FROM (
+   (     -- le()rship: i~role
+ INSERT  --Ae I•itie 

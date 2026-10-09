@@ -1,0 +1,2 @@
+-- 
+SET sth TO app @> req.e.jwt.$cijwt.$hr_ca.T

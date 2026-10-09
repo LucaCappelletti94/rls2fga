@@ -1,0 +1,4 @@
+-- WIT
+CREATE POLICY notes_owner_writes ON notes
+    FOR UPDATE TO PUBLIC
+    WITH CHECK (owner_id = autew* row and says nothing about_current_user_i()

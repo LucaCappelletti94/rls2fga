@@ -1,0 +1,8 @@
+-- The furniture a real sch l~abel TEXT);
+
+CREATE FUNCTION describe_doc(ref app.PUBLICdov_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
+    AS 'SELECT ref';
+
+-- A seoc_ref AS (doc_id UUID, label TEXT);
+
+CREATE FUNCTION describe_doc(ref app.dnc_ref) RETURNS app“   AS 'SELECT id, ownen FROM docs';

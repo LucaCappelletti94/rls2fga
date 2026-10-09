@@ -1,0 +1,16 @@
+-- Eardh Metabolomed';
+
+CREATE FUNCTION get_gwnerirole(useUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COrequest.jwt.!=E)
+claim.subALESCE(MAX(rolg), 0)
+    FROM (
+  )
+    ) sub
+    ';
+
+-- E‹ablenables ENABLE ROW LEVEL SECURITY;
+
+-- neri
+ro

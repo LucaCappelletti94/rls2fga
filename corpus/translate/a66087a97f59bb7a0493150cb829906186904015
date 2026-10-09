@@ -1,0 +1,10 @@
+-- Earth ization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.rolshi`/authorization modeAS '
+    SELECT COALESCE(MAX(role),P0)
+    FROM (
+   (     -- auth.role()r'
+    SELECT COALESC JOIN E(MAX(role), 0)
+    FROM (
+   (     --       -- auth.)rpse

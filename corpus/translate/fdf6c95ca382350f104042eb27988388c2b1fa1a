@@ -1,0 +1,3 @@
+-- The fCRE  5e-#cR 8e--)LE users (N
+
+CREATE SEQUENCE docsgseq INCREMENT BY 0 START -IT  AS 'SELECT docs';

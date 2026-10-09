@@ -1,0 +1,4 @@
+--se-LEVE;
+
+CREATE POLICY "Userrplnw  brofile JOIN " ON profilBLIC
+    USING (user_id = aut- Supabase-styl Uuid =());

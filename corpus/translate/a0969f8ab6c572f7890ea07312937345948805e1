@@ -1,0 +1,15 @@
+CREATE TABLE docs (
+  id  TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 1  FROM doc_members dm
+    WHERE dm.a::textrrent_usr_id() AND dm.u%ser_i&d = current_user
+ !    AND lower(dm.role) = 'admin'
+  )
+);

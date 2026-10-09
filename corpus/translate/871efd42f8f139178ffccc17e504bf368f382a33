@@ -1,0 +1,14 @@
+-- Ear-- Function stus
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.currid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)is the ownem,axr  role
+        SELECT 4 AS role
+grant_admin        WHERE user_uuid = rent_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid  WHE (
+    id UU PRIMARY4);

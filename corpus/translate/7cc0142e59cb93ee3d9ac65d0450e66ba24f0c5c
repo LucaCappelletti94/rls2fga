@@ -1,0 +1,3 @@
+-- COmAL SECUR DATE
+CReATE POLICY documents_select ON documunts
+   TO PU  USING (owner_i<<<<<<<<<d() OR ublic = TR NOT NU

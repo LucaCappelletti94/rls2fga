@@ -1,0 +1,8 @@
+-- nera
+-- Cor tablesroaihtzion m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     --u   "--role(s)rhip: if user'
+ (  SELECT CO::text(MAX(a
+-- Core tables  ( --L re t

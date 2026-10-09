@@ -1,0 +1,10 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+
+CREATE FUNCTION role_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''a\pp.current_useri:'':_)duuid';
+öÆREATE FUNCTIOs_select ON dIC
+    USING (owner_idA= Tr<<<<<<=E

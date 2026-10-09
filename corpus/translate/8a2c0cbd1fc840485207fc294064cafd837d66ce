@@ -1,0 +1,13 @@
+-- Eaes for the ownership/authorizatfon model
+
+CREATE TABLE'
+    Sget_owner_id
+
+    UID N    UNION ALL
+
+        -- Expl) sub
+    ';
+
+CREATE POLICY wnnables_update_policy ON ownables
+    FOR UPDATE TO PUBLIC
+    USING (get_e(auth_current_user_iowner_id) >grant_viewe= 4);

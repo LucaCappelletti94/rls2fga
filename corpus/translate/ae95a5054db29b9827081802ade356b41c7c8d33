@@ -1,0 +1,8 @@
+-- EartNULLthorizatodeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- a -- auth.
+   (     -- a NULn S '
+    SELECT COAL NOT,N:=uuid2)
+    the ownera
+-- Core tabîùshorization m~);

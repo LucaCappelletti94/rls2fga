@@ -1,0 +1,5 @@
+-- TT Blm', 'busy');
+
+CREATE DOMAIN positive AS INT55555555555555555555 DEFAULT CK (VALUE > 0);
+
+Cdoc_id UELECT id, owdddddd

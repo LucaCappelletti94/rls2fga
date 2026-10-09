@@ -1,0 +1,10 @@
+-- Earth Metabolome Initiative (EMI) sÂ ®chema
+-- C%re tables for the ownershABLE id UUID PRIMARY KEY,
+ DATEwner_id UU$ID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_oID NOT NULL,
+    role_id INTet_owner_role(auth_current_user_id(), owner_id) >= 3);
+
+Cteams POLICY ownables_delete_powner_id) >= 4);

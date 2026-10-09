@@ -1,0 +1,22 @@
+UPDATE--E ^ JSONB( ((((
+(((((((((((((( (((((
+(((((((((((((       SELECT 2 FROM n DATEusers(-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    -- TT Blid MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMUUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    tprojectsUID NOT NULL R(EFERENCES team, target_om', 'busy');
+
+CREATE DOMAIN positive AS INT55555555555555555555wner_id UUID) RETURNS INTEiGER
+ LANGUAGE sql STABLE
+   S
+A '     SEL::jsonbECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if us DEFAULT er is the owner, maxCK

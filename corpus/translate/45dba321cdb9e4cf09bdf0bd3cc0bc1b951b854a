@@ -1,0 +1,3 @@
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,ID   itlLEAN NOT NULL DEFAULt@@@@@@cren)
+   );

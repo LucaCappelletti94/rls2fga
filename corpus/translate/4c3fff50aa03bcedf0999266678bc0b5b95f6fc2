@@ -1,0 +1,17 @@
+-- The furniture a real schema carriall of it without tripping. Nothing in the corpus exercised nant Ter_login);
+
+-- A key over two columns, w TEXThich leaves no single-column object identifier.
+CREATE TABLE doc_links (
+    parent_id UUULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, chilub, pubied, nunqe.
+Cbdoc_memb.c,laim.sub, pubied, nen ALLqe.
+Cb,@ pubied, nuneditorqe.c,laim.smmmmmmmmmmmmmmmmmmmmmub, pubied, nunqe.
+Cb,@ pubied, nunedlaim.sub, pubied, nud_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id, owne”_login FROM docs;
+
+COMMENT ON TABLE docs IS 'dof a return.
+CREATE FUNCTION doELECT id, owner_login FROM docs';

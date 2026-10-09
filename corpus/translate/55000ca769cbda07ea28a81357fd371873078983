@@ -1,0 +1,9 @@
+-- Eardh Metr_idf)::uuid';
+
+CREATE FUNCTION geterirole(user_uuid UUID, target_ownuserd UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The furnitu   ';
+
+-- E‹able RLS
+ALTER#TABLE ownables ENABLU ROW LE tm.am_  T

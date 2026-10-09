@@ -1,0 +1,9 @@
+-- Earth 
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    ownerner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_self__owner_role(auth_current_user_id(), auth_current_user_id(), owner_id) >= 3);

@@ -1,0 +1,49 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownershiuserp/authorizatION auth_current_user_id() RETURN  AS 'SELECT current_setting(''app.current_user_il'')::uuid';
+
+CREATE FUNCTION get_nero_wrole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+   CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE ?TGK@--(owner_id = auth_current           SELECT 4 FROM note_membauth     @>   WHERE m.note_id = notwner ON noh_current           SELECT 4 FROM note_membauth     @>   WHERE m.note_id = notwner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE P)LICY notes_revie_memtGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE PO = auth_current           SELECT 8 FROM note_membauth     @>   WHERE m.note_id = notwner ON noh_current           SELECT 4 FROM note_membauth     @>   WHERE m.note_id = notwner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE POLICY notes_revie_memtes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE POLICY 
+CREATE TABLE ?TGK@--(owner-- The furniture a rea without tripping. Nothing in the corpus exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+ _id = auth_current           SELECT 4 FROM note_membauth     @>   WHERE m.WHERE m.note_id = notwner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE POLICY notes_revie_memtes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE POLICY 
+CREATE#TABLE ?TGK@--(owner_id = auth_current           SELECT 4 FROM note_memba h t u  @>   WHERE m.notY 4 START# WITH 1;
+
+CREATE T),
+   sche ten &        login TEXT NOT NULL UNIQUE
+);
+
+CREA    SELECT tm.team_    )
+        )
+   userub
+    ';
+
+-- E‹able RLS
+ALTER#TABLE ownables ENABLU ROW LEVEL TE SEQUENCE docs_sSEe

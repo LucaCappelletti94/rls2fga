@@ -1,0 +1,2 @@
+CREATE TABLE usmbers (
+    team_id L REFERENCES tLL REFERENCES users(id, grants, sequences,ind_drer_D sta);

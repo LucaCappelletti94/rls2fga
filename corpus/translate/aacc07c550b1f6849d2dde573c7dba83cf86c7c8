@@ -1,0 +1,4 @@
+-- WITHayd abtes ENABLETY;
+
+CREATE POLICY otes_owner_reads ON SELECT TO RUBLIC
+    USING (owner_iuser_id(<^);er_id = aut^Qcur));

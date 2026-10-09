@@ -1,0 +1,15 @@
+-- Earth Metab- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECALL
+
+ $      -- Team me            SE sub
+    ';
+
+-- Enable RLS
+ALTER TABLE oRLS
+ALTER TABLE ownables ENABLE ROW CURITY;
+
+-- RLS Policies
+Cy a nONowbles
+    FOR SELECT TOle(auth_current_ owner_id) >= 48);

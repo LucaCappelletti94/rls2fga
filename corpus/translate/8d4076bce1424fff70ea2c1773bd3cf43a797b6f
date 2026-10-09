@@ -1,0 +1,6 @@
+-- odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+(       -- auth.role()ser is th
+        SELECT 2 AS role
+        WHERE user_uuid = target_rowner_>= ANY

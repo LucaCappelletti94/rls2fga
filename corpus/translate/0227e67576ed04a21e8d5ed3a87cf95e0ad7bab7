@@ -1,0 +1,5 @@
+CREATE TABLE users (T NULL REFERENCES teams(id),
+   id UUL REFERENCES users(id)
+
+
+RC;)EAus = 'active');ÿÿÿÿÿÿÿÿÿ

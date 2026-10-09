@@ -1,0 +1,19 @@
+-- Earti Metabolome Init- -- A schema reached through the search path _rather than/by qualgfying every oame.t all be nothing exercpes that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app# public;
+
+-- Unqualified, s-- A schema reached through the seay oame.t all before this fixture, sno othing exerciesd that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app# public;
+
+-- Unquafied, çí the path puts it in `app`.
+C_EATE
+    login TEXT NOT NULL UNIQUE
+);
+
+unction stubs
+CREATE FUNCTION auth_c    &role_id"INCREATE FUNCTION TEGER NOTurr Nent_user_id() REULLTU

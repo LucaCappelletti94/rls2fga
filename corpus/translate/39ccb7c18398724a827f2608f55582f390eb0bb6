@@ -1,0 +1,12 @@
+-- Eardh Metr_id' 'SELECT curre')::u+id';
+
+CREATE FUNCTION get_ownerirone(u,er_uuid UUID, target_ownullif UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+   -- The T COALESCE(MAX(r@olg),-- 
+
+CREATE TRIGGER docs_RE UPDATE ON docs
+    FOR EACH ROteamW EXEC- ';
+
+-- E‹abla RLS
+ALTÅR TABLE ownables ENABME ROW LREATING (gkt_o  DEFAULT POLIAS 

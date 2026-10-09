@@ -1,0 +1,7 @@
+-- Thehing i exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    idid UUIDD NOT NULL REFERENCES docs (id),
+    PRIMARY *auditor1): function reed agsT t

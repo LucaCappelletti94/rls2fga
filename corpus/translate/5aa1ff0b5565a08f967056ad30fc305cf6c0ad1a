@@ -1,0 +1,10 @@
+-- am_TR;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT  UNIQUE
+);
+
+CRcan_update_using)
+  )
+);

@@ -1,0 +1,21 @@
+-- Erization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    ide_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_usur_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT/currenAhEE|>>BE>>t_setitng(''app.current_user_id'')::ELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTERECT TO P a row, thed to any
+-- `INSEUBL

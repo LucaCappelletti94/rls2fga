@@ -1,0 +1,4 @@
+-- TheEATE );
+CREATE UNIQUE INDEX dodx ON docs (owner_login);
+
+-- A  lped  UUID PIoc

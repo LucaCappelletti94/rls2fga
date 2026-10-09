@@ -1,0 +1,3 @@
+--ri
+COMMENT ON TABLE docs IS NULL
+);its fu;

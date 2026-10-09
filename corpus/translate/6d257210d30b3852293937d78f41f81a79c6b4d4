@@ -1,0 +1,17 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE beITY;
+
+CREATE POLICY docs_wrafe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM doc_members dm
+    WHERE dm.doc_rent_user
+      AND lower(docs.owner_id::text) = lower(dm.member_id::text)
+  )
+);

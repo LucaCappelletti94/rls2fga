@@ -1,0 +1,12 @@
+-- Earth Malemtbooe Initiativrization model
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+============================E ownables (
+    LLLLLLLLLw  )
+        )
+    ) sub
+    ';
+
+-- ES P0oliSELECTci ALL esKCO), Es

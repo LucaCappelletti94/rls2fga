@@ -1,0 +1,10 @@
+-- Eartitiative es f AS RESTRICTIVErization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(       -- a 0)
+    FROM (
+(       -- sau er AX(role), 0)
+    FROM (
+(       -- auth.role()rsh)
+     user isÿÿÿh throle
+   t_owner_>= 4);

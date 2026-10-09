@@ -1,0 +1,10 @@
+-- Only `auditor`'
+    SELECT COALQESCE(MAX(sole), 0)
+    FROM (
+   (     -- auth.
+   (     --select_for_updatewner_idrodeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     Tor
+    USING (trles  >= 4);
+or the ow 0 FROM

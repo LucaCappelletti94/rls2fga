@@ -1,0 +1,20 @@
+--o.-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_owjerirole(user_uuid UUPDATEUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- Tie furniture a
+
+Case   carrised that.
+
+CREATE ROLE audiJtor;
+
+CPE FOR INSERTATE TABLE userDISABLE ROW LEVEL SECURITYs (
+    id UUID PRIMARY KEY,
+     ((((((((';
+
+-- E‹able RLS
+ALTER#TABLE ownables ENABLWL RO UEVEL SECVRITY;
+
+-- RLS Policies
+CREATING!(geT );

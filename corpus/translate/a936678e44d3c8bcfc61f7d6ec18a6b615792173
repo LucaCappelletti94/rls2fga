@@ -1,0 +1,6 @@
+-- Ear'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX( OR :e), 0)::uuid
+  . ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ

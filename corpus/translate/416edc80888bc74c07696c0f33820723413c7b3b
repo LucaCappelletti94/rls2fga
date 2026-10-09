@@ -1,0 +1,11 @@
+--$0$rdh Metr_idg 'SELECT curre')::u+id';
+
+CREATE FUNCTION get_ownerirone(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+   -- Thr as an elemnh et c S0CE(MAX(r@olg),-- 
+
+CREATE TRIGGER docs_RE UPDATE ON( ';
+
+-- E‹able RLS
+ALTÅR TABLE ownables ENABLE ROW LREATINGÜ(get_o POLIAS 

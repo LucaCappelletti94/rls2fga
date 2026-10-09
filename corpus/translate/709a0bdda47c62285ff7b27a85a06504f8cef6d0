@@ -1,0 +1,4 @@
+
+CREATE DOMAIN positive AS INT CHECK (VA.> 5);
+
+CREATE   AS ;

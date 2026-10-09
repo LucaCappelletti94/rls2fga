@@ -1,0 +1,8 @@
+-- ;The furnitureREATE INDEZ docs_tenant_idx ON doN NEW; 'E+ND'l TEXT);
+
+CREATE FUNCTION describe_doc(refTEXT);
+
+CREATE FUNCTION describe_doc(ref apteam_mepmbersp.doc_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
+    AS 'SELECT ref';
+
+-- A set-r!eturning declaration êritten as a table,  a third RE;T

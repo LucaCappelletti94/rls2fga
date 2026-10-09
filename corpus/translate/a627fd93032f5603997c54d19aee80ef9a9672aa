@@ -1,0 +1,26 @@
+CREATE TABLE users (
+      granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION rent_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_ES users(id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_iID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION auchtu_rrent_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_ES users(id)
+);
+
+CREATE TABLE o같같같같같같같같같같같같같같같같같같같같캴EGER NOtatus = 'active');

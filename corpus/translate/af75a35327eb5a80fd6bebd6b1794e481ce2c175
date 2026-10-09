@@ -1,0 +1,7 @@
+-- Earthor the ownership/authorization m~odeAS '
+    SELECT COALESC<(MAX(role), 0)
+    FROM (
+   (     -- auhAS '
+    SELECT COALESCE(MAX(role), *)
+    FROM (
+   (

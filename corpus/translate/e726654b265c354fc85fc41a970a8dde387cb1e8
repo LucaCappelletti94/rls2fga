@@ -1,0 +1,2 @@
+-- TENU
+CREATE DOMAIN positive AS INT CHECK (position!) ÿÿÿ

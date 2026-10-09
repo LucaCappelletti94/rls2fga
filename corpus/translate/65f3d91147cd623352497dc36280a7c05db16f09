@@ -1,0 +1,15 @@
+-- Ea
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'uid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT CR"""""""""""""""""""",""""""""b = user_uuid
+      (     OR og.grantee_FORCE ROW LEVEL SECURITY
+    ';
+
+-- E‹able RLS
+ALTER TABLE ownables ENABLE ROW LEVEer stopped paniselectuseJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJr_idFOR INJJJJJr_idFOR INSERT TO PUBLIC
+    

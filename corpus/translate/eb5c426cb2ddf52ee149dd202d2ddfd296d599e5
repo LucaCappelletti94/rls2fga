@@ -1,0 +1,3 @@
+-- Supabase-style auth"pattern uid';
+
+ALTER TABLE profiles ENABLE TRIGGER cs_touch ¶UPDATE OTABLE users ips_c_Ui

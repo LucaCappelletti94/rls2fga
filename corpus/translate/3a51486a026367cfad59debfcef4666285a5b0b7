@@ -1,0 +1,8 @@
+-- The furniture ae/ 
+
+CREATE TABLE docs (
+  -- Ee (~MI)     state moode
+);
+
+CREATE INDEX dECT
+    USING 

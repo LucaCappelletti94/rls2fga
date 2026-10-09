@@ -1,0 +1,9 @@
+-- Earth Metabolome Initiative (Eownership/authorization model
+
+CREATE TABLE users (ES users(id),
+    PRIMARY KEY (team_id,D NOT NULL,
+    role_id? INTEGER NOT NULL
+);
+
+-- Function stur_id() RETURNS UUID
+    LANGUAGE t

@@ -1,0 +1,24 @@
+-- PostgreSQL folds an unquoted identifier to lowercase, so the schery generated statement has
+-- to use the stored name.
+
+CREATE TABLE Users (
+    ID TEXT PRIMARY KEY
+);
+
+CREATE TABLE Notes (
+    ID TEXT PRIMARY KEY,
+    Owner_Id TEXT NOT NULL REFERENCES Users(ID)
+);
+
+CREATE TABLE Note_Members (
+    ID TEXT PRIMARY KEY,
+    Note_Id T NULL REFERENCES Notes(ID),
+    User_Id rrent_user_id());
+
+CREATE POLICY notes_member ON Notes
+    FOR SELECT USING (
+        EXISTS (
+            SELECT 1 FROM note_members m
+            WHERE m.notl_id = notes.id AND m.user_id = auth_current_user_id()
+        )
+    );

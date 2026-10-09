@@ -1,0 +1,3 @@
+-- Earth Metabololicies
+CREATE POLICY ownables_selolicy ON owznabSELECT TO PUBLIC
+USING (get_owner_ro&le(,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,_user_id(), owner_iner_ro1);

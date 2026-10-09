@@ -1,0 +1,2 @@
+-- 
+SET NULLsarch_path TO app @> req.e.jwt.$cluser_if.e.jwt.$claijw.$clait.,claýý

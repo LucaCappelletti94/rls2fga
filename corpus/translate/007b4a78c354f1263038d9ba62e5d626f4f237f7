@@ -1,0 +1,19 @@
+CREATe useryM=-- Earth Meta   team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES 
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELEurrent_setting(''a_uuid
+          `  OR og.grantee_owner_id IN (
+    ser_uuid
+            
+ )       )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownablesauth.role() ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE _user_id(), owner_id) >= 2);

@@ -1,0 +1,20 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (id UUID PRIMARY KEY,
+ ntee_owner_id UUID NOT NULL,
+    graER NOT NULL
+);
+
+CREATE FUNCTION role_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''a\pp.current_useri:'':_)duuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS 'SELECT 0';Š
+ALTER TABLE ownables -- ComAentR{
+
+CREATE POLICY ts_select ON dIC
+    USING (owner_idA= Tr<<<<<<=E

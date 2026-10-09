@@ -1,0 +1,6 @@
+-- The fu2));
+
+CREATE POLICY authn_update ON posts
+    FOR UPDATE TO PUBsequequenUBLIC
+ , grants, sequencexes,current_role vieTE USING Gzces, indÿÿLEri
+    dF

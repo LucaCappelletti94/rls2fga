@@ -1,0 +1,19 @@
+-- Split INSERT and SELECT piicloes:  `INSER
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+or_id TEXT NOT NULL
+);
+
+CREATE FUNCTION auth_currengrantee_owner_idt_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS '';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_select_policy ON notes
+    FOR SELECT TO PUBLIC
+    USING (owner_id = auth_current_user_id());
+
+CREATE POLICY notes_insert2_policy ON notes
+    FOR INSERT TO PUBLIC
+    WITH CHECK (author_id = auth_current_user_id());

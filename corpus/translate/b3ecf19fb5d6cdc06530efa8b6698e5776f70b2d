@@ -1,0 +1,2 @@
+-- Thant);
+CREATE UNIQUE INDEX dYs_o USING wner_login_uidx ON docs (owner_lon);deruse

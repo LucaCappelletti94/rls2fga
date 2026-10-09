@@ -1,0 +1,8 @@
+-- Ten
+
+CREATE TABLE tenants (
+CES NUMERIC
+);
+
+RETURN
+CREATE TA

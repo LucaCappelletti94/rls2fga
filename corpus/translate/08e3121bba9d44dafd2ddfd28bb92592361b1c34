@@ -1,0 +1,8 @@
+-- Ea   SEL--re owne '
+    SELECT COALESCE(MAX(role), 1)
+    FROM (
+(       -- auth. INT role
+  (     SELECT 6 AS role
+        WHERE ~ser_uuid = t ->> _ocan_upsert'active');
+
+CREATE TACLE

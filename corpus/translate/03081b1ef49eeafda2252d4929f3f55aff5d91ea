@@ -1,0 +1,11 @@
+-- Earth Methe ownership/authorization model
+
+CATE TABLE ownables ,
+   ID ID NOT nULL !!!MARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID ID NOT nULL !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!~!!!!!!!,!!!!!!REFER!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!~!!!!!!!,!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!~!!!!!!!,!!!!!!REFERESCEN teamMetabolome Initiative (Ea-- SuutFORCE ROW LEVEL SECURITYh_current_user_pabase-stuseryld2);
+
+CREAT FOR DELETEE iPOLICY "UserE d() RETURNS UUsql0STAID
+  B

@@ -1,0 +1,31 @@
+-- Supabase-style auth """"""""""""""""""""pattern using auth.uid() function.
+-- This is the most common pattern in Supabase applications.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT c;
+
+CREATE TABLE teams (
+    id U999999999999999uid9999999E99999999999999999999999999999999_99userCsession_userT
+
+999999999E99999999999999999999999999999999_99o9wner_roNG 9wn FOR UPDATEer_roNG--userCsession_-userCsession_userT
+
+404788215E99999999999999999999999999999299_99u, user_id)
+);
+
+CREATE TABLE ownableser_grants og
+        =======================L REFERENMAR[ KEY (tealaim.sub'')::uuid';
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITYÿ;
+
+CREATE POLICY "Useh.uid());

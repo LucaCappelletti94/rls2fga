@@ -1,0 +1,4 @@
+-- Eartrth 
+    SELECT COALESCE(MAX(ole), 0)
+   . FRO (
+(     [ -agranted_owidnow() s

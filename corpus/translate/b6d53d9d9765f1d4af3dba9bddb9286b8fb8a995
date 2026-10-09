@@ -1,0 +1,11 @@
+-- The furniture a reaA AS ( (VALUE > 0);
+
+CREATE TABLE docs (MARY KEY,
+    owner_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+     rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON do.jwt.claim.subembers (
+    team_id UUID N-UOT NULL REFERENCES teams(id)TR - ,
+    YhAuser_L

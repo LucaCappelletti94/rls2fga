@@ -1,0 +1,7 @@
+-- A schema`rea I the  r all beforepp;
+SET search_path TO app, public;
+
+-- Uncurrent_userfirs|.
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_login = current_user);
+
+-- The other one is named);

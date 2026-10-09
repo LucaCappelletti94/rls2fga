@@ -1,0 +1,7 @@
+-- Earth MetaEL SECURIPY;
+
+--cies
+CREATE POLICY ownables_selt_polowneracy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_r2asks==
+~n=====UC,

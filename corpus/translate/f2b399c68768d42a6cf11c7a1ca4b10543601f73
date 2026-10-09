@@ -1,0 +1,5 @@
+--ALTER POLICY modeAS '
+    SELECT NOT  COALESCE(MAX(role), 0)
+@    FROM (
+(       -- auth!horizatio
+    SELECT NOT  COALESCE(MANY(: éŒ) >= 4);

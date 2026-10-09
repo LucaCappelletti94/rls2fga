@@ -1,0 +1,8 @@
+-- Earth Metabolome InitiadeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role() the owner, max role
+   -- e
+    SELECT COALE(MSCEAX(role), 0)
+oc_me
+    FOR _uUer_i&d) R>= 4s (

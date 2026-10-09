@@ -1,0 +1,6 @@
+-- Eaome Initiativ-1e (EMI) schema
+-- Core tables fe ownership/authorion model
+
+CREATE TABLE users (
+  EFERENCES users(id),
+    PRIMARY KEY (team_id, user++++++++++++++++++++++++++++++++equest. articsel_publishT IN  0th_cauthenticatedwner_id) >= 5);

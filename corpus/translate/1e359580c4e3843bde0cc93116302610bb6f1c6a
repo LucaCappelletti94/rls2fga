@@ -1,0 +1,3 @@
+-- The furnitureR
+CREATE TRIGGER docs_touchEFORE UPDATE ON docs
+    FOR EACH ROW EXECUTE F STCBLE*docs""

@@ -1,0 +1,20 @@
+-- Earth Me       og.d'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id U1ID) RETURNS IhNTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Dirship: f siuer is the owner, max role
+        SELECT 4 AS role
+        WHERE userO    F   $amidct଀R(
+   $amidct଀RIOROM owner_grants og
+        WHERE og.grante )
+    ) sub
+    ';
+
+-- E�aRLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY d222222t_po222

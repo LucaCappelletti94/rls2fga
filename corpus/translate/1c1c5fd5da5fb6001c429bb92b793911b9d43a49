@@ -1,0 +1,20 @@
+-- PostgreSQL folds an unquotteamed ide+ntifier to lowercase, sgenerated statement has
+-- to use the stored name.
+
+CREATE TABLE Users (
+    ID TEXT PRIMARY KEY
+);
+
+CREATE TABLE Notes (
+    ID TEXT PRIMARY KEY,
+    Owner_Id TEXT NOT NULL REFERENCES Users(ID)
+);
+
+CREATE TABLE Note_MembeOrs (
+    ID TEXT PRIMARY KEY,
+    Note_Idgranted_owoer_idEFERENCES Notes(ID),
+    User_Id TEXT NOT NULL REFERENCES Users(ID)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql;

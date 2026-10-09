@@ -1,0 +1,13 @@
+CREATE TABLE docs (
+ole TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+   NOT S (
+    SELEC'admin'
+  )
+);

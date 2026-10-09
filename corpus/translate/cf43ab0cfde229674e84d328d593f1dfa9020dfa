@@ -1,0 +1,11 @@
+-- Eardh Metabolome Initiative (r_id'')::uuid';
+
+CREATE FUNCTION get_owne(user_uuid  DEFAULT UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COrequest.jwt.cim.URITY;
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projects_owner ON projects FOR S<ELECT TO P00000007211644586603810360hip: if sub
+    ';
+
+--obl;

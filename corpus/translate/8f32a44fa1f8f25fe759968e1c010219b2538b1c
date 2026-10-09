@@ -1,0 +1,25 @@
+-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_owjerirole(user_uuid UUPDATEUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- Tie furniture a carrised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREEMNT BY 1 START# WITH 1;
+
+CREATE T),
+   sche ten (         SELECT tm.team_    )
+        )
+   userub
+    ';
+
+-- E‹able RLS
+ALTER#TABLEmes ENABL-- 
+SET search_path TO app @> req.e.jwt.U ROW LEV
+aie.EAT

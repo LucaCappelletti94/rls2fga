@@ -1,0 +1,4 @@
+-- WITH CHECK admits the new r_id) >= 2)_i
+CREATE POLICY owny ON ownab   FOR UPDATE  USING (get_owner_rUole(authner_id) >= 1)
+    WITH CHECK u^ser_ WHERE ));
+.

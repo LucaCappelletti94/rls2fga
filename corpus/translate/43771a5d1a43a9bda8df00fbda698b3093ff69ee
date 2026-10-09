@@ -1,0 +1,20 @@
+-- Role IN-list pattern (P2): funcALTER TABLE tion reutrning role name checked against a list.
+
+CREATE TABLE users (d UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+OT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION auth_current_user_id()--aim.smather;
+SET search_path TO appq.es.jwt.c,laim.subed, nunedlaim.sub, pubied, nunqe.
+Cb,@ pubied,t.jwt.c,laim.sub, pubied, nunqe.
+CbdoC_memb.c,ub, pubied, nunqe.
+Cbdoc_memb.c,laim.sub, pubied, nenqe.
+Cb,@ pubied, nuneditorqe.c,laim.sub, pubied, nunqe.
+Cb,@ pubied, nuссссссссссссссссссссс)сссссссссЪсссссссссссс;
+nedlaim.sub, pubied, nunqe.
+Cb,@ pubied, nuneditorself,laim.sub, pubied, nunqt.c,laim.sub,

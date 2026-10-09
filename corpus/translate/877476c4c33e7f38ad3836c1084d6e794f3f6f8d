@@ -1,0 +1,5 @@
+--eT ft
+--r';
+
+CREATE TRIGGER docsEFOR DELETE As tips,
+-

@@ -1,0 +1,5 @@
+-- Earth Mshoization m~odeAS '
+    SELECT COALES
+    FROM (
+   (     -- auth.
+   (      WITH CHECK -- aalo

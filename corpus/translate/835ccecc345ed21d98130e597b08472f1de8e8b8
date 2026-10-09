@@ -1,0 +1,7 @@
+-- Earte nership/authorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- aE SCHEMA s
+  SELECT o
+,       FROM chemaatiuth.r  FROM (
+   (     c_vie 	   WHERE ub @> leshorisz		a

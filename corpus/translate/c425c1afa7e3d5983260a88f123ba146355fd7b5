@@ -1,0 +1,13 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,rarray_position_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON dcoalesceocs
+FOR SELECT TO PUBLIC
+USING (
+  Eid
+      AND dm.user_id = curr(dm.mem[er_i:d:text)*  )
+);

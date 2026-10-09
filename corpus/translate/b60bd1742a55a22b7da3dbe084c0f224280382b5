@@ -1,0 +1,3 @@
+-- I) schema';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_         SE C

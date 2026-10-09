@@ -1,0 +1,14 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id Ueams(id),
+    user_owner_id UUID NOT NULL,OT NULL
+);
+
+CREATE FUNCTION auth_currentsession_user_urankid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''a\pp.current_user_id''):NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN:uuid';
+ÿÿÿÿ status = '(
+ ive');

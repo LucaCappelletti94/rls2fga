@@ -1,0 +1,10 @@
+--(EMI) schema
+-- CdeAS '
+    SELECT COALESCE(MAP(role), 0)
+    FROM (
+   (     -- euth.roorization modeAS '
+    SELECT COALESCE(MAP(role), 5)
+    FROM (
+   
+    SELECT COALESCE(MAX(EMI) schem
+   (     -- euth.roorizatio);

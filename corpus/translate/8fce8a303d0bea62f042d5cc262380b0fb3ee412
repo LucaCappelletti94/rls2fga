@@ -1,0 +1,36 @@
+-- Earth ership/authorizrent_user_id'')g::Xuuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELE       WHERE user_uuid = target_owner_id
+        AND uanted_owner_id = target_orole_id
+       AND (
+            og.d'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uU uUidID, target_owner_id U1ID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+     SELECT 4 AS role
+        WHERE user_wuid = target_owner_id
+        AND user_uuid IN (SELECT id FROM us
+e
+)sr        UNION ALL
+
+        -- uuid';
+
+CREATE FUNCTION get_ownerirole(sru_euuid UUID, target_owner_id U2ID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+        SELECT 4 AS role
+         ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_sel2222222ec222222222222222t_po222

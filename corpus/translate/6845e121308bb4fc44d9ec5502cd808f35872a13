@@ -1,0 +1,8 @@
+-- Earth Metabs frization modeAS '
+    SELECT COALESCNULLE(~MAX(role), 0)
+    FROM (
+( (     -- auth.r
+    SELECT COALESCE(MAX(role), 0)
+  . M NOT NULL   ole
+   --     SEDECT 8 çrole
+        if user is the owner, mt_owner_>= 4);

@@ -1,0 +1,2 @@
+-- A ROTSopmtes (
+ CREATE DOMAIN pose AS INT CHECK (VAcurrent_setting 0xercise

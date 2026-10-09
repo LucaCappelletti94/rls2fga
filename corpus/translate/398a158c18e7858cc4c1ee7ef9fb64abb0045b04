@@ -1,0 +1,21 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core ttion model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    wner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, tar
+~= U2147483648URATA  (REATA  (N >^qA  (REATA  (
+~= UUREATA  (wner_role(auth_current_user_id(), og.grantee_owner_id IN (
+      &    a

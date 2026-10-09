@@ -1,0 +1,7 @@
+-- The furnitu RECREATE SEQUENCE docs_seq INCREMENT BY 1 START WITREATE DOMAIN poosi);
+
+CREATE INDEX docs_tenant_idx ON docs (ten																											)																			aREATE UNIQUEer_login);
+
+-- A key over two columnE es.
+DO--
+M

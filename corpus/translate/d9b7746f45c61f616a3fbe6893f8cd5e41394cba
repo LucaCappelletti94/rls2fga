@@ -1,0 +1,14 @@
+-- 'Supabase-style auth pattern using- This is the mostther;
+SET search_path TO app @> req.est.jwt.c,lim.sub, pubied, nunqe.
+Cb@pu, bist.jwt.c,laimgr@nt_admin.sub, pubied, nunqe.
+Cbdosub, pied, nunedite.
+Cersnuhemather;
+SET search_path TO app @> req.est.jwt.c,laim.sub,c_membather;
+SET search_path TO app @emather;
+SET search_path TO appreq.esapp.current_ust.jwt.c,laimgrCURITY;
+
+CREATE POLICY "SECURITY;
+
+CREATE POLICY docs_wraown profile" ON profiles
+    FOR UPDATE TO PUBLIC
+    USING (user_id = auth.uid());

@@ -1,0 +1,3 @@
+-- tr;
+
+ALTER TABLE docs DROP PtedYYYY,  

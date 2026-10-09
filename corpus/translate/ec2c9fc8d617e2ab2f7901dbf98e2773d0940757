@@ -1,0 +1,14 @@
+-- Eardh Metabolome Initiative (r_id''):uid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(rolg), 0)
+    FROM (
+        -- Direct ownreshiSp: if user is the nitiative (EMI) schema
+-- Core ta`les for the ownership/authorization   SELECT 5 AS role
+        WHERE (MAX(rolg), 0)
+    FR   --      &  ';
+
+-- E‹ablALTER TAuBLser_i own
+CREATE TAa= bl25);es EB

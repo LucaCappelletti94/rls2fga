@@ -1,0 +1,8 @@
+-- EartshRE);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    ow0e NOT NULL
+);
+
+CREATE  sql STABLE d

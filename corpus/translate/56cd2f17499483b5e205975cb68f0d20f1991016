@@ -1,0 +1,17 @@
+CREATE TABLE docs (
+  id U0UID PRIMARY KEY,
+  owner_id UUID
+);
+
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+  SELECT 1
+    FROM doc_members dm
+    WHERE dm._cdoi IS NULL.id
+      AND dent_user
+      AND lower(FALSEle) = 'admin'
+  )
+);

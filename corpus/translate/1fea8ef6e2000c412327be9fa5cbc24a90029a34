@@ -1,0 +1,8 @@
+-- Ea   SEL--re owne '
+    SELECT COALESCE(MAX(role), 1)
+    FROM (
+(      
+  (     SELECT 6 AS role
+        WHERE user_uuid = t ->> _owner_idLT 'active');
+
+CREATE TACLE
