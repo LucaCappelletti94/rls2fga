@@ -277,46 +277,52 @@ fn leaf_decision<DB: DatabaseLike>(
 
     let mut unique = BTreeSet::new();
     let mut shapes = Vec::new();
+    let mut kind = None;
     for indexed in feeding {
         let description = indexed.description?;
-        if !row_names_a_user(&description.derivation, type_name, &well_known.user, db) {
+        let subject = row_subject(&description.derivation, type_name, &well_known.user, db)?;
+        // One relation's shapes fill one kind of leaf, so a mix falls closed.
+        if *kind.get_or_insert(subject) != subject {
             return None;
         }
         if unique.insert(indexed.source.dedup_key()) {
             shapes.push(description.clone());
         }
     }
-    Some(RowDecision::Leaf {
-        relation: relation.clone(),
-        shapes,
+    let relation = relation.clone();
+    Some(match kind? {
+        RowSubject::Named => RowDecision::Leaf { relation, shapes },
+        RowSubject::Everyone => RowDecision::Everyone { relation, shapes },
     })
 }
 
-fn row_names_a_user<DB: DatabaseLike>(
+/// Whom one row's record grants, when the row alone settles it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowSubject {
+    /// The user the row names.
+    Named,
+    /// Every user, through the typed wildcard.
+    Everyone,
+}
+
+fn row_subject<DB: DatabaseLike>(
     derivation: &RecordDerivation,
     type_name: &TypeName,
     user_type: &TypeName,
     db: &DB,
-) -> bool {
+) -> Option<RowSubject> {
     let RecordDerivation::FromRow {
         table, template, ..
     } = derivation
     else {
         // A joining source reads a second table, so the row does not decide.
-        return false;
+        return None;
     };
-    // A conditional record grants only while its condition holds, which a plain leaf
-    // cannot say, so the consumer must ask rather than read the subject at face value.
-    if template.context.is_some() {
-        return false;
+    // A conditional record grants only while its condition holds, which no row leaf says.
+    if template.context.is_some() || template.object_type != *type_name {
+        return None;
     }
-    if template.object_type != *type_name {
-        return false;
-    }
-    // The object has to be this row's identity: every key column, in declared order. A
-    // record keyed by a foreign column describes another object, which a change to this
-    // row does not own. A single-column key is a list of one, so nothing about that case
-    // moves.
+    // A record keyed by a foreign column describes another object, which this row does not own.
     let object_columns: Option<Vec<&str>> = template
         .object_key
         .parts()
@@ -326,19 +332,15 @@ fn row_names_a_user<DB: DatabaseLike>(
             _ => None,
         })
         .collect();
-    let Some(object_columns) = object_columns else {
-        return false;
-    };
-    let Some(row_identity) = resolve_row_identity(table, db) else {
-        return false;
-    };
-    if object_columns != row_identity {
-        return false;
+    if object_columns? != resolve_row_identity(table, db)? {
+        return None;
     }
-    // The subject has to be a user the consumer can compare against, named by
-    // this row rather than reached through another type's membership.
+    // A subject reached through another type's membership is not one the row settles.
     if template.subject_type != *user_type {
-        return false;
+        return None;
     }
-    !matches!(template.subject_key.part(), ValueSource::Literal(_))
+    if template.subject_key.is_wildcard() {
+        return Some(RowSubject::Everyone);
+    }
+    (!matches!(template.subject_key.part(), ValueSource::Literal(_))).then_some(RowSubject::Named)
 }

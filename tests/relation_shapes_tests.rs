@@ -1608,6 +1608,11 @@ enum Leaf<'a> {
         relation: &'a str,
         shapes: &'a [RecordDescription],
     },
+    /// Every user, on a row the shapes yield a record for.
+    Everyone {
+        relation: &'a str,
+        shapes: &'a [RecordDescription],
+    },
     /// The row settles one side of a comparison the caller's own value completes, so the
     /// subject is a wildcard and the context is what stops it granting everyone.
     Gated {
@@ -1621,13 +1626,17 @@ enum Leaf<'a> {
 impl<'a> Leaf<'a> {
     fn relation(&self) -> &'a str {
         match self {
-            Self::Named { relation, .. } | Self::Gated { relation, .. } => relation,
+            Self::Named { relation, .. }
+            | Self::Everyone { relation, .. }
+            | Self::Gated { relation, .. } => relation,
         }
     }
 
     fn shapes(&self) -> &'a [RecordDescription] {
         match self {
-            Self::Named { shapes, .. } | Self::Gated { shapes, .. } => shapes,
+            Self::Named { shapes, .. }
+            | Self::Everyone { shapes, .. }
+            | Self::Gated { shapes, .. } => shapes,
         }
     }
 }
@@ -1636,6 +1645,10 @@ impl<'a> Leaf<'a> {
 fn recipe_leaves(decision: &RowDecision) -> Vec<Leaf<'_>> {
     match decision {
         RowDecision::Leaf { relation, shapes } => vec![Leaf::Named {
+            relation: relation.as_str(),
+            shapes: shapes.as_slice(),
+        }],
+        RowDecision::Everyone { relation, shapes } => vec![Leaf::Everyone {
             relation: relation.as_str(),
             shapes: shapes.as_slice(),
         }],
@@ -1826,8 +1839,8 @@ fn a_computed_relation_inside_a_recipe_flattens_into_what_it_names() {
 }
 
 /// Assertion 6. What the recipe inherits from the flag: every leaf resolves from the
-/// object's own row to a user the consumer can compare against. A literal subject would
-/// put `user:*` on the local path, which a subject set cannot express.
+/// object's own row to a user the consumer can compare against, or to every user through
+/// the typed wildcard and nothing else.
 #[test]
 fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
     let mut checked = 0usize;
@@ -1893,6 +1906,13 @@ fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
                             "{fixture}: leaf {}#{relation} carries a literal subject: {:?}",
                             reported.type_name,
                             template.subject_key
+                        ),
+                        // A condition on an everyone leaf would grant everyone past it.
+                        Leaf::Everyone { .. } => assert!(
+                            template.subject_key.is_wildcard() && template.context.is_none(),
+                            "{fixture}: everyone leaf {}#{relation} is not an unconditional \
+                             wildcard: {template:?}",
+                            reported.type_name
                         ),
                         // A gated leaf grants the wildcard, so the context is the only
                         // thing standing between it and granting everyone. Losing the
@@ -2025,7 +2045,7 @@ CREATE FUNCTION auth_current_user_id() RETURNS TEXT LANGUAGE sql STABLE
     AS 'SELECT current_setting(''app.current_user_id'')';
 ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY docs_owner ON docs FOR SELECT
-    USING (owner_id = auth_current_user_id() AND status = 'open');
+    USING (owner_id = auth_current_user_id() AND status IN ('open', 'draft'));
 ";
 
 /// Phase 1, test 1. A permissive arm the threshold dropped makes the emitted
@@ -2198,7 +2218,7 @@ fn a_discarded_attribute_guard_undecides_the_relation_it_widened() {
     );
     assert!(
         model_at(GUARD_DISCARD, ACCESSOR_REGISTRY, ConfidenceLevel::C)
-            .contains("define can_select: owner"),
+            .contains("define can_select: owner\n"),
         "and the emitted model is untouched, so the scar is the only difference"
     );
 }
@@ -2362,15 +2382,17 @@ fn the_session_attribute_fixtures_translate_or_scar_what_is_left() {
         // a row identity built from its two-column key, so it reports no loss and its own
         // reads are decidable.
         //
-        // The share arm now settles from the share row: each share is its own object on
-        // `paper_shares_share`, so that gate is decidable while `papers` reads stay
-        // decidable through ownership.
+        // The share arm settles from the share row: each share is its own object on
+        // `paper_shares_share`. `shares_delete USING (true)` grants every user, so the
+        // delete is decided by the row as well.
         (
             "connetto_capability",
             &[],
             &[
+                "paper_shares#can_delete",
                 "paper_shares#can_select",
                 "paper_shares#gate_shares_read_abbc62d2",
+                "paper_shares#public_viewer",
                 "paper_shares_share#gate_papers_p_3b273139",
                 "papers#owner",
             ],
@@ -3717,4 +3739,102 @@ fn a_temporal_conjunct_beside_a_cross_row_one_keeps_the_unnarrowed_derivation() 
         );
     }
     assert!(!member.shapes.is_empty(), "the membership reports a shape");
+}
+
+/// A table open to everybody, capped by a request-only gate on the caller's declared list.
+const OPEN_UNDER_GATE: &str = "
+CREATE TABLE orders (id INT PRIMARY KEY, quantity BIGINT NOT NULL);
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+CREATE POLICY orders_open ON orders FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY orders_cap_read ON orders AS RESTRICTIVE FOR SELECT USING (
+  'orders:read' = ANY(string_to_array(current_setting('app.bot_list', true), ','))
+  OR '*' = ANY(string_to_array(current_setting('app.bot_list', true), ',')));
+";
+
+const BOT_LIST_ATTRIBUTES: &str = r#"[{ "key": "app.bot_list", "kind": "set_attribute" }]"#;
+
+fn shapes_with_attributes(sql: &str, attributes_json: &str) -> Vec<RelationShapes> {
+    let (db, registry) = parsed_with_session_attributes(sql, attributes_json);
+    translation(
+        &db,
+        &registry,
+        ConfidenceLevel::B,
+        &GeneratorSettings::default(),
+    )
+    .relations()
+    .to_vec()
+}
+
+/// `USING (true)` grants every user whatever the row holds, and the gate is settled by the
+/// request, so the pair needs no stored fact and the recipe says so.
+#[test]
+fn an_open_table_under_a_request_gate_is_decided_without_a_round_trip() {
+    let shapes = shapes_with_attributes(OPEN_UNDER_GATE, BOT_LIST_ATTRIBUTES);
+    let open = entry(&shapes, "orders", "public_viewer");
+    let everyone = RowDecision::Everyone {
+        relation: open.relation.clone(),
+        shapes: open.shapes.clone(),
+    };
+    assert!(open.from_one_row, "the open arm reads nothing but the row");
+    assert_eq!(open.decision.as_ref(), Some(&everyone));
+
+    let gates: Vec<RowDecision> = shapes
+        .iter()
+        .filter(|reported| {
+            reported
+                .relation
+                .as_str()
+                .starts_with("gate_orders_cap_read")
+        })
+        .map(|reported| {
+            reported
+                .decision
+                .clone()
+                .expect("a request-only gate is decided by the request")
+        })
+        .collect();
+    assert_eq!(gates.len(), 2, "one gate per arm of the OR");
+    assert_eq!(
+        entry(&shapes, "orders", "can_select").decision,
+        Some(RowDecision::All(vec![everyone, RowDecision::Any(gates)])),
+        "the read is the open arm intersected with the gate"
+    );
+}
+
+/// A public flag grants every user exactly on the rows whose flag holds, which the shape's
+/// guard says, so the row decides it.
+#[test]
+fn a_public_flag_is_decided_from_its_own_row() {
+    let shapes = shapes_of(
+        "
+CREATE TABLE docs (id TEXT PRIMARY KEY, is_public BOOLEAN NOT NULL);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY docs_public ON docs FOR SELECT USING (is_public = true);
+",
+        "{}",
+    );
+    let flag = shapes
+        .iter()
+        .find(|reported| {
+            reported.type_name.as_str() == "docs"
+                && reported.shapes.iter().any(|shape| {
+                    matches!(
+                        &shape.derivation,
+                        RecordDerivation::FromRow { guards, .. }
+                            if matches!(guards.as_slice(), [Guard::IsTrue(_)])
+                    )
+                })
+        })
+        .expect("the flag fills a relation");
+    assert_eq!(
+        flag.decision,
+        Some(RowDecision::Everyone {
+            relation: flag.relation.clone(),
+            shapes: flag.shapes.clone(),
+        })
+    );
+    assert!(
+        entry(&shapes, "docs", "can_select").from_one_row,
+        "the read is the flag alone"
+    );
 }

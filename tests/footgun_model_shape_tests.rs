@@ -509,8 +509,11 @@ fn no_relation_is_flagged_decidable_that_leaves_its_own_row() {
                     continue;
                 }
                 tables.insert(table.clone());
+                // The typed wildcard grants every user, which the row decides through
+                // the record's existence alone.
                 assert!(
-                    !matches!(template.subject_key.part(), &ValueSource::Literal(_)),
+                    template.subject_key.is_wildcard()
+                        || !matches!(template.subject_key.part(), &ValueSource::Literal(_)),
                     "{}#{} is flagged decidable yet its subject is a literal: {}",
                     row.type_name,
                     row.relation,
