@@ -179,12 +179,24 @@ fn expr_decision<DB: DatabaseLike>(
             child_decisions(type_name, children, plan, sources, db, visiting).map(RowDecision::All)
         }
         // A link to the object holding this type's request gates reaches a predicate over
-        // the request alone, so the caller's context decides it for every row.
+        // the request alone, so the caller's context decides it for every row that yields
+        // its link.
         UsersetExpr::TupleToUserset { tupleset, computed }
             if links_to_request_gates(type_name, tupleset, plan, sources) =>
         {
-            request_predicate(&plan.well_known.request_gate, computed, plan, sources)
-                .map(RowDecision::Request)
+            let predicate =
+                request_predicate(&plan.well_known.request_gate, computed, plan, sources)?;
+            let shapes = shapes_filling(type_name, tupleset, sources);
+            if shapes.is_empty() {
+                return None;
+            }
+            Some(RowDecision::Request {
+                relation: tupleset.clone(),
+                shapes,
+                // Every gate entry grants the typed wildcard of the user type.
+                subject_type: plan.well_known.user.clone(),
+                predicate,
+            })
         }
         // Any other tuple-to-userset resolves on the object the tupleset reaches rather
         // than on this row, and an exclusion lets adding a record revoke access, so

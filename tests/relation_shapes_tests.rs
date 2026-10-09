@@ -1637,16 +1637,15 @@ fn recipe_leaves(decision: &RowDecision) -> Vec<Leaf<'_>> {
         RowDecision::Any(children) | RowDecision::All(children) => {
             children.iter().flat_map(recipe_leaves).collect()
         }
-        // The request alone decides it, so no record of the row takes part.
-        RowDecision::Request(_) => Vec::new(),
-        other => panic!("a recipe shape this test cannot read: {other:?}"),
+        // Its link names the gate object rather than a user, so it adds no user leaf.
+        RowDecision::Request { .. } => Vec::new(),
     }
 }
 
 /// Whether a recipe reaches a predicate the check context decides with no record.
 fn reaches_the_request(decision: &RowDecision) -> bool {
     match decision {
-        RowDecision::Request(_) => true,
+        RowDecision::Request { .. } => true,
         RowDecision::Any(children) | RowDecision::All(children) => {
             children.iter().any(reaches_the_request)
         }
@@ -3757,14 +3756,17 @@ fn an_open_table_under_a_request_gate_is_decided_without_a_round_trip() {
             value: value.to_string(),
         })
     };
+    let link = entry(&shapes, "orders", "request_gate");
     assert_eq!(
         entry(&shapes, "orders", "can_select").decision,
         Some(RowDecision::All(vec![
             everyone,
-            RowDecision::Request(RequestPredicate::Any(vec![
-                holds("*"),
-                holds("orders:read")
-            ])),
+            RowDecision::Request {
+                relation: link.relation.clone(),
+                shapes: link.shapes.clone(),
+                subject_type: TypeName::canonicalized(USER_TYPE),
+                predicate: RequestPredicate::Any(vec![holds("*"), holds("orders:read")]),
+            },
         ])),
         "the read is the open arm intersected with the gate the request decides"
     );

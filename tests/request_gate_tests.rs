@@ -4,8 +4,11 @@
 //! model declares nor the tuples a row carries may grow with what it does not read.
 
 use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
+use rls2fga::generator::well_known::WellKnownTypes;
 use rls2fga::translator::{Outputs, TranslatorBuilder};
-use rls2fga::types::{ConfidenceLevel, RequestComparison, RequestPredicate, RowDecision};
+use rls2fga::types::{
+    ConfidenceLevel, RecordDerivation, RequestComparison, RequestPredicate, RowDecision,
+};
 
 mod support;
 
@@ -156,7 +159,7 @@ fn a_request_gate_is_decided_by_the_request_alone() {
     let predicates: Vec<&RequestPredicate> = children
         .iter()
         .filter_map(|child| match child {
-            RowDecision::Request(predicate) => Some(predicate),
+            RowDecision::Request { predicate, .. } => Some(predicate),
             _ => None,
         })
         .collect();
@@ -176,4 +179,83 @@ fn a_request_gate_is_decided_by_the_request_alone() {
         .collect();
     values.sort_unstable();
     assert_eq!(values, ["*", "t0:read"]);
+}
+
+/// The recipe names the link a row reaches its gates through, so a consumer keys it to the
+/// table whose rows it judges and checks the row yields the link, and it names the one type
+/// the gate admits, so a subject of another type or a userset is refused rather than let in.
+#[test]
+fn a_request_gate_names_its_link_and_the_type_it_admits() {
+    let names = WellKnownTypes::new(
+        "principal",
+        "team",
+        "pg_role",
+        "pg_role_scope",
+        "request_gate",
+        "nobody",
+    )
+    .expect("the names are valid");
+    let outputs = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_well_known_types(names)
+        .with_session_attributes([
+            SessionAttribute::setting("app.user_id", SessionAttributeKind::CallerId),
+            SessionAttribute::setting("app.bot_list", SessionAttributeKind::SetAttribute),
+        ])
+        .build()
+        .translate(&db_of(&gated_tables(1)))
+        .expect("translation should plan")
+        .outputs()
+        .expect("every clause translates");
+    let relations = outputs.translation().relations();
+    let entry = |type_name: &str, relation: &str| {
+        relations
+            .iter()
+            .find(|entry| entry.type_name.as_str() == type_name && entry.relation == relation)
+            .unwrap_or_else(|| panic!("{type_name} defines {relation}"))
+    };
+    let Some(RowDecision::All(children)) = &entry("t0", "can_select").decision else {
+        panic!("can_select is decided by the row and the request");
+    };
+    let [(relation, shapes, subject_type)] = children
+        .iter()
+        .filter_map(|child| match child {
+            RowDecision::Request {
+                relation,
+                shapes,
+                subject_type,
+                ..
+            } => Some((relation, shapes, subject_type)),
+            _ => None,
+        })
+        .collect::<Vec<_>>()[..]
+    else {
+        panic!("one gate decides the read: {children:#?}");
+    };
+
+    assert!(!shapes.is_empty(), "the link is filled from the row");
+    assert_eq!(
+        *shapes,
+        entry("t0", relation.as_str()).shapes,
+        "the shapes are the link relation's own"
+    );
+
+    let entry_subjects: Vec<&str> = relations
+        .iter()
+        .filter(|entry| entry.type_name.as_str() == "request_gate")
+        .flat_map(|entry| &entry.shapes)
+        .filter_map(|shape| match &shape.derivation {
+            RecordDerivation::Constant { record } => record.subject.split_once(':'),
+            _ => None,
+        })
+        .map(|(subject_type, _)| subject_type)
+        .collect();
+    assert!(!entry_subjects.is_empty(), "the gate entries are reported");
+    assert!(
+        entry_subjects
+            .iter()
+            .all(|entry| *entry == subject_type.as_str()),
+        "the recipe admits {subject_type}, the entries grant {entry_subjects:?}"
+    );
+    assert_eq!(subject_type.as_str(), "principal");
 }

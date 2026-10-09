@@ -35,7 +35,7 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
     let request_parameter = source.condition_parameter();
     let mut namespace = condition_parameters.namespace([request_parameter]);
     let row_parameter = namespace.allocate_row(column.as_str());
-    let spec = request_comparison_spec(&row_parameter, request_parameter, comparison)?;
+    let spec = request_comparison_spec(&row_parameter, request_parameter, comparison);
     let condition = declare_condition(table_plan, spec);
 
     let memo_key = format!(
@@ -67,13 +67,12 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
 }
 
 /// The condition comparing what a tuple carries under `row_parameter` against what the
-/// caller supplies under `request_parameter`, or `None` for a comparison this crate
-/// cannot state.
+/// caller supplies under `request_parameter`.
 fn request_comparison_spec(
     row_parameter: &ConditionParameterName,
     request_parameter: &ConditionParameterName,
     comparison: RequestComparison,
-) -> Option<ConditionSpec> {
+) -> ConditionSpec {
     let (request_type, operator) = match comparison {
         RequestComparison::CallerSetHolds => {
             (ConditionParameter::ListOf(STRING_PARAMETER_TYPE), "in")
@@ -81,9 +80,8 @@ fn request_comparison_spec(
         RequestComparison::CallerValueEquals => {
             (ConditionParameter::Scalar(STRING_PARAMETER_TYPE), "==")
         }
-        _ => return None,
     };
-    Some(ConditionSpec {
+    ConditionSpec {
         expression: format!("{row_parameter} {operator} {request_parameter}"),
         parameters: [
             (
@@ -94,7 +92,7 @@ fn request_comparison_spec(
         ]
         .into_iter()
         .collect(),
-    })
+    }
 }
 
 /// The request's half of the comparison, as the policy declared it.
@@ -190,7 +188,7 @@ struct GateObject<'a> {
 
 impl GateObject<'_> {
     /// The relation of the request-gate type standing for `formula`, or `None` for a
-    /// constant or a comparison this crate cannot state.
+    /// constant.
     ///
     /// Named after the formula's content, so one formula is one relation wherever it
     /// gates, and two guarded types share it on their own objects.
@@ -208,11 +206,11 @@ impl GateObject<'_> {
                     &row_parameter,
                     &atom.request_parameter,
                     atom.comparison,
-                )?;
+                );
                 let condition = declare_condition(self.plan, spec);
                 let verb = match atom.comparison {
+                    RequestComparison::CallerSetHolds => "holds",
                     RequestComparison::CallerValueEquals => "is",
-                    _ => "holds",
                 };
                 let relation = self.plan.ensure_direct(
                     request_gate_relation_name(

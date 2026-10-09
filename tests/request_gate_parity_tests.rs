@@ -110,7 +110,20 @@ fn recipe_allows(
         RowDecision::All(children) => children
             .iter()
             .all(|child| recipe_allows(child, row, subject, context)),
-        RowDecision::Request(predicate) => predicate_holds(predicate, context),
+        RowDecision::Request {
+            shapes,
+            subject_type,
+            predicate,
+            ..
+        } => {
+            subject_type.as_str() == "user"
+                && shapes.iter().any(|shape| {
+                    !records_from_row(shape, &JsonRowValues(row))
+                        .expect("the link resolves from the row")
+                        .is_empty()
+                })
+                && predicate_holds(predicate, context)
+        }
         other => panic!("a recipe shape this gate does not produce: {other:?}"),
     }
 }
@@ -124,7 +137,6 @@ fn predicate_holds(predicate: &RequestPredicate, context: &serde_json::Value) ->
                     .as_array()
                     .is_some_and(|set| set.iter().any(|entry| entry == atom.value.as_str())),
                 RequestComparison::CallerValueEquals => supplied == atom.value.as_str(),
-                other => panic!("a comparison this gate does not produce: {other:?}"),
             }
         }
         RequestPredicate::Any(children) => {

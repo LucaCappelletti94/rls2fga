@@ -32,10 +32,9 @@ pub struct RelationShapes {
 /// those shapes yield any record, [`Self::Any`] is the union of its children and
 /// [`Self::All`] their intersection.
 ///
-/// `#[non_exhaustive]`: a shape the analysis learns to decide adds a variant, and a
-/// caller matching this outside the crate keeps a wildcard arm.
+/// Exhaustive on purpose, so a consumer that has not learned a new shape fails to compile
+/// rather than treating it as one it knows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum RowDecision {
     /// The subjects are the records these shapes produce for this row.
     Leaf {
@@ -76,17 +75,26 @@ pub enum RowDecision {
         /// How the two sides are compared.
         comparison: RequestComparison,
     },
-    /// The caller's request alone decides, the same way for every row. The row reaches
-    /// the predicate through a link every row of the type carries, and the predicate
-    /// reads no column.
-    Request(RequestPredicate),
+    /// Every subject of `subject_type` on a row that yields its link, while the caller's
+    /// request satisfies the predicate. The predicate reads no column,
+    /// so it decides every row of the type alike.
+    Request {
+        /// The direct relation linking the row to the object holding its request gates.
+        /// Always on the same type.
+        relation: RelationName,
+        /// The shapes filling that link, identical to that relation's own entry. Never
+        /// empty.
+        shapes: Vec<RecordDescription>,
+        /// The type the gate admits, as its typed wildcard. A subject of any other type,
+        /// and any userset, is refused.
+        subject_type: TypeName,
+        /// What the caller's request has to satisfy.
+        predicate: RequestPredicate,
+    },
 }
 
 /// How a request-gated relation compares the row's side against the caller's.
-///
-/// `#[non_exhaustive]` permits more comparisons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[non_exhaustive]
 pub enum RequestComparison {
     /// The caller's set has to hold the row's value.
     CallerSetHolds,
