@@ -1,5 +1,6 @@
 ---
 source: tests/generator_tests.rs
+assertion_line: 28
 expression: "tuple_generator::format_tuples(outputs.tuple_queries())"
 ---
 SET TIME ZONE 'UTC';
@@ -13,9 +14,9 @@ WHERE "owner" IS NOT NULL
 AND "id" IS NOT NULL
 AND octet_length('user:' || CASE WHEN "owner"::text ~ '^[A-Za-z0-9._@-]+$' THEN "owner"::text ELSE '~' || encode(convert_to("owner"::text, 'UTF8'), 'hex') END) <= 512;
 
--- Caller-set share on team_members_share carrying team_members.member, evaluated by condition when_team_members_share_items_p_f7fde765
+-- Caller-set share on team_members_share carrying team_members.member, evaluated by condition when_member_in_app_subjects_85f3f83a
 SELECT 'team_members_share:' || CASE WHEN "team_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "team_id"::text ELSE '~' || encode(convert_to("team_id"::text, 'UTF8'), 'hex') END || '|' || CASE WHEN "member"::text ~ '^[A-Za-z0-9._@-]+$' THEN "member"::text ELSE '~' || encode(convert_to("member"::text, 'UTF8'), 'hex') END AS object, 'gate_items_p_d3ff2ba0' AS relation, 'user:*' AS subject,
-  'when_team_members_share_items_p_f7fde765' AS condition, jsonb_build_object('member', "member"::text) AS context
+  'when_member_in_app_subjects_85f3f83a' AS condition, jsonb_build_object('member', "member"::text) AS context
 FROM "public"."team_members"
 WHERE "team_id" IS NOT NULL AND "member" IS NOT NULL
 AND length('team_members_share:' || CASE WHEN "team_id"::text ~ '^[A-Za-z0-9._@-]+$' THEN "team_id"::text ELSE '~' || encode(convert_to("team_id"::text, 'UTF8'), 'hex') END || '|' || CASE WHEN "member"::text ~ '^[A-Za-z0-9._@-]+$' THEN "member"::text ELSE '~' || encode(convert_to("member"::text, 'UTF8'), 'hex') END) <= 256;

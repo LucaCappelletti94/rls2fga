@@ -104,6 +104,8 @@ Every query projects `object`, `relation` and `subject`. One whose `TupleQuery::
 
 Running the SQL and writing the tuples are yours: the crate keeps no database handle. The model is the exception, `client::write_authorization_model` writes it to a running server over a client you built.
 
+A model `OpenFGA` would refuse to store is a translation error. `translate` returns `PlanningError::ModelBoundExceeded`, naming the bound, the item and both numbers, for every bound the `openfga/api` protobuf declares, such as 25 conditions, 512-byte condition expressions and 50-character names. Limits the server sets in its own configuration cannot be known here, so `Outputs::type_count` and, with `client`, `Outputs::model_size_in_bytes` report what to compare against `maxTypesPerAuthorizationModel` (100 by default) and `maxAuthorizationModelSizeInBytes` (256 KiB).
+
 ## Cargo features
 
 `std` is on by default and carries the file output surface (`Outputs::write`). Without it the crate builds on `no_std` plus `alloc`, verified against `thumbv7em-none-eabi`, with the whole pipeline intact. `client` adds the model writer and implies `std`.

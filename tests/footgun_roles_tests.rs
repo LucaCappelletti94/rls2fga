@@ -916,8 +916,7 @@ CREATE POLICY docs_scoped ON docs FOR SELECT TO auditor USING (opaque_gate(id));
 /// type. The object id may not: it lives in the shared `pg_role_scope` type, so two
 /// tables whose policies happen to share a name land on one object and each one's roles
 /// are written onto it. Every row of both tables then admits the union, which grants
-/// each table the other's roles. `gate_condition_name` already keys on the type and the
-/// policy together for exactly this reason.
+/// each table the other's roles.
 #[test]
 fn two_tables_with_a_same_named_policy_do_not_pool_their_role_scopes() {
     let db = db_of(

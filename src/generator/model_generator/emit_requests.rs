@@ -71,12 +71,18 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
         ]
         .into_iter()
         .collect(),
-        row_parameter: row_parameter.clone(),
     };
-    let condition = declare_condition(table_plan, policy_name, spec);
+    let condition = declare_condition(table_plan, spec);
 
+    // Every constant tested against one request value shares the condition, so the
+    // relation is keyed on the constant too. Two arms sharing one relation would write two
+    // tuples under one key for every row.
+    let relation_key = match carried {
+        RowParameterSource::Column(_) => policy_name.to_string(),
+        RowParameterSource::Constant(value) => format!("{policy_name}_{value}"),
+    };
     let relation = table_plan.ensure_direct(
-        conditional_gate_relation_name(policy_name),
+        conditional_gate_relation_name(&relation_key),
         vec![DirectSubject::ConditionalWildcard {
             type_name: table_plan.well_known.user.clone(),
             condition: condition.clone(),
@@ -127,29 +133,10 @@ impl RowParameterSource<'_> {
     }
 }
 
-/// Declare `spec` under a name free in this type plan, and answer with that name.
-///
-/// A policy name is unique only per table and a condition name is global to the model, so
-/// the base is keyed on both. One policy covering several commands mints the same guard
-/// once per command, which is why an identical spec reuses its name: only a **different**
-/// guard inside one policy takes the suffix.
-pub(crate) fn declare_condition(
-    table_plan: &mut TypePlan,
-    policy_name: &str,
-    spec: ConditionSpec,
-) -> ConditionName {
-    let base = gate_condition_name(table_plan.type_name.as_str(), policy_name);
-    // One more candidate than there are conditions, so one is always free.
-    let ceiling = table_plan.conditions.len() + 2;
-    let name = core::iter::once(base.clone())
-        .chain((2..=ceiling).map(|nth| ConditionName::canonicalized(format!("{base}_{nth}"))))
-        .find(|candidate| {
-            table_plan
-                .conditions
-                .get(candidate)
-                .is_none_or(|existing| *existing == spec)
-        })
-        .unwrap_or(base);
+/// Declare `spec` on this type plan under the name its content earns, and answer with
+/// that name.
+pub(crate) fn declare_condition(table_plan: &mut TypePlan, spec: ConditionSpec) -> ConditionName {
+    let name = spec.name();
     table_plan.conditions.insert(name.clone(), spec);
     name
 }
@@ -177,7 +164,6 @@ pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
 
     let condition = declare_condition(
         table_plan,
-        policy_name,
         ConditionSpec {
             expression: format!(
                 "{row_parameter} {operator} {}",
@@ -195,10 +181,6 @@ pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
             ]
             .into_iter()
             .collect(),
-            row_parameter: RowParameter::Column {
-                parameter: row_parameter.to_string(),
-                column: request.column.clone(),
-            },
         },
     );
 
@@ -297,7 +279,6 @@ pub(crate) fn temporal_gates<DB: DatabaseLike>(
 pub(crate) fn declare_temporal_condition<DB: DatabaseLike>(
     residual: &ResidualPredicates,
     table: &TableId,
-    policy_name: &str,
     table_plan: &mut TypePlan,
     request_time_parameter: &ConditionParameterName,
     condition_parameters: &ConditionParameterAllocator,
@@ -305,9 +286,9 @@ pub(crate) fn declare_temporal_condition<DB: DatabaseLike>(
 ) -> Option<(ConditionName, Vec<GateContextColumn>)> {
     let mut namespace = condition_parameters.namespace([request_time_parameter]);
     let gates = temporal_gates(residual, table, request_time_parameter, &mut namespace, db)?;
-    let [first, ..] = gates.as_slice() else {
+    if gates.is_empty() {
         return None;
-    };
+    }
     let expression = gates
         .iter()
         .map(|gate| gate.fragment.as_str())
@@ -326,17 +307,11 @@ pub(crate) fn declare_temporal_condition<DB: DatabaseLike>(
         request_time_parameter.to_string(),
         ConditionParameter::Scalar(TIMESTAMP_PARAMETER_TYPE),
     );
-    let row_parameter = RowParameter::Column {
-        parameter: first.parameter.to_string(),
-        column: first.column.clone(),
-    };
     let condition = declare_condition(
         table_plan,
-        policy_name,
         ConditionSpec {
             expression,
             parameters,
-            row_parameter,
         },
     );
     let context = gates
@@ -488,10 +463,6 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
     let spec = ConditionSpec {
         expression,
         parameters: parameters.into_iter().collect(),
-        row_parameter: RowParameter::Column {
-            parameter: row_parameter.to_string(),
-            column: member_column.clone(),
-        },
     };
 
     let temporal_context: Vec<GateContextColumn> = temporal
@@ -510,7 +481,7 @@ pub(crate) fn emit_membership_in_caller_set<DB: DatabaseLike>(
         let share_plan = all_types.entry(share_type.clone()).or_insert_with(|| {
             TypePlan::new_with_well_known(share_type.clone(), &ctx.settings.well_known)
         });
-        let condition = declare_condition(share_plan, policy_name, spec);
+        let condition = declare_condition(share_plan, spec);
         let key = emit_membership::membership_source_key(
             join_table,
             &identity_cols,

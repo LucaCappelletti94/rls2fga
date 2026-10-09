@@ -849,8 +849,8 @@ fn a_type_name_is_decided_in_one_place() {
 /// the idempotence of the canonicalizer stops being load-bearing.
 ///
 /// Stored fields only. A function that renders a name as text, or looks one up by its
-/// rendered form, takes `&str` on purpose: `dsl::bare`, `TableTypes::spelling_of`,
-/// `Recursion::blocked_targets` and `gate_condition_name`.
+/// rendered form, takes `&str` on purpose: `dsl::bare`, `TableTypes::spelling_of` and
+/// `Recursion::blocked_targets`.
 #[test]
 fn a_type_name_is_stored_as_a_type_name() {
     // Named rather than matched by suffix: `return_type` and `data_type` are SQL types,

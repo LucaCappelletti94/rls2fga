@@ -106,13 +106,24 @@ pub(crate) async fn start_postgres() -> ContainerAsync<GenericImage> {
 
 /// An `OpenFGA` container serving both its HTTP and its gRPC port.
 pub(crate) async fn start_openfga() -> ContainerAsync<GenericImage> {
+    start_openfga_with(&[]).await
+}
+
+/// [`start_openfga`] with `settings` in its environment, such as
+/// `OPENFGA_MAX_AUTHORIZATION_MODEL_SIZE_IN_BYTES`.
+pub(crate) async fn start_openfga_with(
+    settings: &[(&str, String)],
+) -> ContainerAsync<GenericImage> {
     start_with_retry("OpenFGA v1.11.6", || {
-        GenericImage::new("openfga/openfga", "v1.11.6")
-            .with_exposed_port(8080.tcp())
-            .with_exposed_port(8081.tcp())
-            .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
-            .with_cmd(["run"])
-            .with_startup_timeout(READINESS_TIMEOUT)
+        settings.iter().fold(
+            GenericImage::new("openfga/openfga", "v1.11.6")
+                .with_exposed_port(8080.tcp())
+                .with_exposed_port(8081.tcp())
+                .with_wait_for(WaitFor::message_on_stdout("starting HTTP server"))
+                .with_cmd(["run"])
+                .with_startup_timeout(READINESS_TIMEOUT),
+            |request, (name, value)| request.with_env_var(*name, value.as_str()),
+        )
     })
     .await
 }

@@ -181,7 +181,6 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     let gate = declare_temporal_condition(
         extra_predicates,
         member_table,
-        policy_name,
         table_plan,
         &ctx.settings.request_time_parameter,
         ctx.condition_parameters,
@@ -658,7 +657,6 @@ fn emit_membership<DB: DatabaseLike>(
     let gate = declare_temporal_condition(
         extra_predicates,
         join_table,
-        policy_name,
         table_plan,
         &ctx.settings.request_time_parameter,
         ctx.condition_parameters,

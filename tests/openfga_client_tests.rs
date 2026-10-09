@@ -140,3 +140,49 @@ async fn the_denial_cannot_be_lifted_by_writing_a_fact() {
         "INSERT has no policy, so nobody may insert"
     );
 }
+
+/// The size the outputs report is the one the server compares with its
+/// `maxAuthorizationModelSizeInBytes`, so a server capped exactly there stores the model
+/// and one capped a byte lower refuses it.
+#[tokio::test]
+#[ignore = "requires Docker and an openfga/openfga container"]
+async fn the_reported_model_size_is_the_size_the_server_measures() {
+    let db = rls2fga::parser::sql_parser::parse_schema(OWNERSHIP).expect("the schema parses");
+    let outputs = TranslatorBuilder::new()
+        .with_min_confidence(ConfidenceLevel::B)
+        .with_registry_json(ACCESSOR_REGISTRY)
+        .expect("the registry parses")
+        .build()
+        .translate(&db)
+        .expect("translation should plan")
+        .outputs_accepting_gaps();
+    let size = outputs
+        .model_size_in_bytes()
+        .expect("the model translates into the client's types");
+
+    for (cap, stored) in [(size, true), (size - 1, false)] {
+        let container = support::containers::start_openfga_with(&[(
+            "OPENFGA_MAX_AUTHORIZATION_MODEL_SIZE_IN_BYTES",
+            cap.to_string(),
+        )])
+        .await;
+        let grpc_port = container.get_host_port_ipv4(8081).await.unwrap();
+        let mut service = support::openfga::connect(grpc_port).await;
+        let store_id = support::openfga::create_store(&mut service, "model-size").await;
+        let written = rls2fga::client::write_authorization_model(
+            &mut service,
+            &store_id,
+            &outputs.json_model(),
+        )
+        .await;
+        let refused_for_size = matches!(
+            &written,
+            Err(rls2fga::client::WriteModelError::Refused(status))
+                if status.message().starts_with("model exceeds size limit")
+        );
+        assert!(
+            written.is_ok() == stored && refused_for_size != stored,
+            "a {size}-byte model under a {cap}-byte cap: {written:?}"
+        );
+    }
+}

@@ -27,11 +27,11 @@ use crate::generator::well_known::{
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     attribute_gate_relation_name, canonical_fga_type_name, clamp_relation_name,
-    conditional_gate_relation_name, gate_condition_name, is_owner_like_column_name, lookup_table,
-    lookup_table_id, membership_read_scope_relation_name, parent_type_from_fk_column,
-    public_flag_relation_name, resolve_table_id, role_limited_relation_name, role_scope_name,
-    row_presence_relation_name, stored_relation_name, table_id_has_column, table_identity,
-    yielded_relation_name, MAX_RELATION_NAME_LEN, MAX_RELATION_RENAME_ATTEMPTS,
+    conditional_gate_relation_name, is_owner_like_column_name, lookup_table, lookup_table_id,
+    membership_read_scope_relation_name, parent_type_from_fk_column, public_flag_relation_name,
+    resolve_table_id, role_limited_relation_name, role_scope_name, row_presence_relation_name,
+    stored_relation_name, table_id_has_column, table_identity, yielded_relation_name,
+    MAX_RELATION_NAME_LEN, MAX_RELATION_RENAME_ATTEMPTS,
 };
 use crate::parser::sql_parser::{
     ColumnLike, DatabaseLike, ForeignKeyLike, IdentifierCase, PolicyLike, RoleLike, TableLike,
@@ -173,8 +173,32 @@ pub(crate) struct ConditionSpec {
     pub expression: String,
     /// Parameter name to its `OpenFGA` type, sorted so emission is stable.
     pub parameters: BTreeMap<String, ConditionParameter>,
-    /// The parameter each tuple supplies, and where its value comes from.
-    pub row_parameter: RowParameter,
+}
+
+impl ConditionSpec {
+    /// The name this condition is declared under, read off what it evaluates alone.
+    ///
+    /// `OpenFGA` refuses a model declaring more than 25 conditions, so two guards
+    /// evaluating one expression over one parameter list share one name wherever they
+    /// come from, and the count follows the distinct guards rather than the tables.
+    pub(crate) fn name(&self) -> ConditionName {
+        let mut key = self.expression.clone();
+        for (parameter, kind) in &self.parameters {
+            let (shape, element) = match kind {
+                ConditionParameter::Scalar(element) => ("scalar", element),
+                ConditionParameter::ListOf(element) => ("list", element),
+            };
+            for part in [parameter.as_str(), shape, element] {
+                key.push('\0');
+                key.push_str(part);
+            }
+        }
+        ConditionName::canonicalized(format!(
+            "when_{}_{}",
+            self.expression,
+            stable_hex_suffix(&key)
+        ))
+    }
 }
 
 /// A condition parameter's type.
@@ -652,6 +676,26 @@ pub enum PlanningError {
         first: String,
         /// Source configured second.
         second: String,
+    },
+    /// Two different conditions were named alike. A condition's name is read off its
+    /// expression and parameters, so only a hash collision reaches this.
+    #[error("two different conditions both take the name `{name}`")]
+    ConditionNameCollision {
+        /// The name both conditions took.
+        name: ConditionName,
+    },
+    /// The model to be written crosses a `validate.rules` bound in `openfga/api`,
+    /// which the `WriteAuthorizationModel` call would refuse.
+    #[error("the model crosses the OpenFGA {bound} bound at `{item}`: {measured} against {limit}")]
+    ModelBoundExceeded {
+        /// The bound the model crosses.
+        bound: crate::generator::model_bounds::ModelBound,
+        /// The measured count or length.
+        measured: usize,
+        /// The limit the measurement may not cross.
+        limit: usize,
+        /// The item that crosses it, the name the bound applies to.
+        item: String,
     },
 }
 
@@ -1144,15 +1188,19 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     }
 
     let types = ordered_types(all_types, &settings.well_known.user);
-    let conditions = surviving_conditions(&types);
+    let conditions = surviving_conditions(&types)?;
 
-    Ok(SchemaPlan {
+    let plan = SchemaPlan {
         types,
         notes,
         confidence_summary,
         conditions,
         well_known: settings.well_known.clone(),
-    })
+    };
+    crate::generator::model_bounds::check(&crate::generator::json_model::json_model_from_plan(
+        &plan,
+    ))?;
+    Ok(plan)
 }
 
 /// One table's build in progress.
@@ -1785,8 +1833,12 @@ fn ordered_types(
 
 /// Only the conditions a surviving reference still names.
 ///
-/// A policy dropped by confidence filtering cannot leave a condition behind.
-fn surviving_conditions(types: &[TypePlan]) -> BTreeMap<ConditionName, ConditionSpec> {
+/// A policy dropped by confidence filtering cannot leave a condition behind. Two type
+/// plans declare one condition under one name, since the name is read off the content,
+/// and two different conditions reaching one name is refused rather than merged.
+fn surviving_conditions(
+    types: &[TypePlan],
+) -> Result<BTreeMap<ConditionName, ConditionSpec>, PlanningError> {
     let named: BTreeSet<&ConditionName> = types
         .iter()
         .flat_map(|plan| plan.direct_relations.values())
@@ -1797,12 +1849,23 @@ fn surviving_conditions(types: &[TypePlan]) -> BTreeMap<ConditionName, Condition
             DirectSubject::Type(_) | DirectSubject::Wildcard(_) => None,
         })
         .collect();
-    types
+    let mut conditions = BTreeMap::new();
+    for (name, spec) in types
         .iter()
         .flat_map(|plan| plan.conditions.iter())
         .filter(|(name, _)| named.contains(name))
-        .map(|(name, spec)| (name.clone(), spec.clone()))
-        .collect()
+    {
+        match conditions.get(name) {
+            Some(held) if held != spec => {
+                return Err(PlanningError::ConditionNameCollision { name: name.clone() })
+            }
+            Some(_) => {}
+            None => {
+                conditions.insert(name.clone(), spec.clone());
+            }
+        }
+    }
+    Ok(conditions)
 }
 
 fn source_carries_condition(source: &TupleSource) -> bool {

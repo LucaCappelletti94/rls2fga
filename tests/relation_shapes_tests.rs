@@ -1462,38 +1462,6 @@ fn conditional_wildcards(json: &str) -> Vec<(String, String, String)> {
     found
 }
 
-/// A condition is global to the model while the guard it expresses belongs to one table,
-/// so two types sharing one condition means one of them is answering with the other's
-/// rule. Nothing about the model itself forbids the sharing, which is why this is checked
-/// rather than assumed.
-#[test]
-fn no_condition_is_shared_by_two_types() {
-    let mut checked = 0usize;
-    for fixture in support::fixture_names() {
-        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
-        let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
-        let json = serde_json::to_string(&planned.json_model()).expect("the model serializes");
-        let mut owners: std::collections::BTreeMap<String, BTreeSet<String>> =
-            std::collections::BTreeMap::new();
-        for (type_name, _, condition) in conditional_wildcards(&json) {
-            checked += 1;
-            owners.entry(condition).or_default().insert(type_name);
-        }
-        for (condition, types) in owners {
-            assert_eq!(
-                types.len(),
-                1,
-                "{fixture}: condition '{condition}' is referenced by {types:?}, so one of them \
-                 carries the other's guard"
-            );
-        }
-    }
-    assert!(
-        checked > 0,
-        "no fixture exercises a condition, so this invariant checks nothing"
-    );
-}
-
 /// A condition reads its row's value under a parameter name, and the tuple supplies that
 /// value under a context key. The two are minted apart, and a mismatch denies every check
 /// on the type while the model and the SQL each look right alone.
@@ -2415,7 +2383,7 @@ fn the_session_attribute_fixtures_translate_or_scar_what_is_left() {
             &[],
             &[
                 "documents#can_select",
-                "documents#gate_documents_mfa_e65d3d44",
+                "documents#gate_documents_mfa_aal2_ed02710d",
                 "documents#owner",
             ],
         ),
@@ -2424,7 +2392,7 @@ fn the_session_attribute_fixtures_translate_or_scar_what_is_left() {
             &[],
             &[
                 "audit_log#can_select",
-                "audit_log#gate_audit_admin_02ce9ca4",
+                "audit_log#gate_audit_admin_admin_d57d0020",
             ],
         ),
     ];
@@ -3794,10 +3762,16 @@ fn an_open_table_under_a_request_gate_is_decided_without_a_round_trip() {
         })
         .collect();
     assert_eq!(gates.len(), 2, "one gate per arm of the OR");
-    assert_eq!(
-        entry(&shapes, "orders", "can_select").decision,
-        Some(RowDecision::All(vec![everyone, RowDecision::Any(gates)])),
-        "the read is the open arm intersected with the gate"
+    let Some(RowDecision::All(read)) = &entry(&shapes, "orders", "can_select").decision else {
+        panic!("the read is the open arm intersected with the gate");
+    };
+    let [open_arm, RowDecision::Any(arms)] = read.as_slice() else {
+        panic!("the read is the open arm intersected with the gate: {read:?}");
+    };
+    assert_eq!(*open_arm, everyone);
+    assert!(
+        arms.len() == gates.len() && gates.iter().all(|gate| arms.contains(gate)),
+        "the gate is the union of its arms: {arms:?}"
     );
 }
 

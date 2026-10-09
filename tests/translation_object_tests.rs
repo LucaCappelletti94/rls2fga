@@ -1,4 +1,9 @@
 //! Reaching the outputs, and what stops it.
+use core::fmt::Write;
+
+use rls2fga::generator::model_bounds::ModelBound;
+use rls2fga::generator::well_known::WellKnownTypes;
+use rls2fga::translator::PlanningError;
 
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::{parse_schema, ParserDB};
@@ -264,4 +269,141 @@ fn relation_name_deserialization_rejects_invalid_strings() {
         result.is_err(),
         "invalid relation name accepted: {result:?}"
     );
+}
+
+/// One table guarded by the clock, so its read earns a condition.
+const TEMPORAL: &str = "CREATE TABLE docs(id UUID PRIMARY KEY, expires_at TIMESTAMPTZ);\n\
+                       ALTER TABLE docs ENABLE ROW LEVEL SECURITY;\n\
+                       CREATE POLICY docs_sel ON docs FOR SELECT USING (expires_at > now());\n";
+
+/// `count` tables, each guarded by a temporal clause with its own offset, so every
+/// guard is a distinct condition.
+fn schema_with_temporal_guards(count: usize) -> String {
+    let mut sql = String::new();
+    for index in 0..count {
+        writeln!(
+            sql,
+            "CREATE TABLE t{index:02}(id UUID PRIMARY KEY, expires_at TIMESTAMPTZ);\n\
+             ALTER TABLE t{index:02} ENABLE ROW LEVEL SECURITY;\n\
+             CREATE POLICY t{index:02}_sel ON t{index:02} FOR SELECT \
+             USING (expires_at > now() - interval '{offset} days');\n",
+            offset = index + 1,
+        )
+        .expect("schema writes");
+    }
+    sql
+}
+
+/// `OpenFGA` refuses a model declaring more than 25 conditions, and a model the
+/// service would refuse must not leave the translator.
+#[test]
+fn twenty_six_conditions_refuse_the_translation() {
+    let db = db_of(&schema_with_temporal_guards(26));
+    let error = TranslatorBuilder::new()
+        .build()
+        .translate(&db)
+        .expect_err("26 distinct conditions cross the bound");
+    let PlanningError::ModelBoundExceeded {
+        bound,
+        measured,
+        limit,
+        ref item,
+    } = error
+    else {
+        panic!("the crossed bound must name itself: {error:?}");
+    };
+    assert!(matches!(bound, ModelBound::Conditions), "got {bound:?}");
+    assert_eq!(measured, 26);
+    assert_eq!(limit, 25);
+    assert!(
+        !item.is_empty(),
+        "the item must name the condition it counts"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("25") && message.contains("26"),
+        "the message must name the limit and the count, got {message}"
+    );
+}
+
+/// Sitting exactly on the bound is within it.
+#[test]
+fn twenty_five_conditions_still_translate() {
+    let db = db_of(&schema_with_temporal_guards(25));
+    let outputs = TranslatorBuilder::new()
+        .build()
+        .translate(&db)
+        .expect("25 conditions sit exactly on the bound")
+        .outputs_accepting_gaps();
+    assert_eq!(
+        outputs
+            .json_model()
+            .conditions
+            .as_ref()
+            .map_or(0, std::collections::BTreeMap::len),
+        25,
+        "the model must declare exactly the 25 distinct guards"
+    );
+}
+
+/// The request-time parameter a deployment configures names the request side of
+/// every temporal condition, so one past fifty characters crosses a bound the
+/// write would refuse.
+#[test]
+fn a_request_time_parameter_over_fifty_characters_refuses_the_translation() {
+    let db = db_of(TEMPORAL);
+    let error = TranslatorBuilder::new()
+        .with_request_time_parameter("t".repeat(55))
+        .expect("fifty five letters are a valid identifier")
+        .build()
+        .translate(&db)
+        .expect_err("the parameter name crosses its bound");
+    let PlanningError::ModelBoundExceeded {
+        bound,
+        measured,
+        limit,
+        ..
+    } = error
+    else {
+        panic!("the crossed bound must name itself: {error:?}");
+    };
+    assert!(
+        matches!(bound, ModelBound::ConditionParameterKey),
+        "got {bound:?}"
+    );
+    assert_eq!(measured, 55);
+    assert_eq!(limit, 50);
+}
+
+/// A configured well-known type name is length-checked only where the written
+/// model is checked, since the constructor takes what the deployment spells.
+#[test]
+fn a_configured_type_name_past_two_hundred_fifty_four_refuses_the_translation() {
+    let well_known = WellKnownTypes::new(
+        "u".repeat(255),
+        "team",
+        "pg_role",
+        "pg_role_scope",
+        "nobody",
+    )
+    .expect("the name is otherwise valid");
+    let db = db_of(CLEAN);
+    let error = TranslatorBuilder::new()
+        .with_well_known_types(well_known)
+        .build()
+        .translate(&db)
+        .expect_err("the type name crosses its bound");
+    let PlanningError::ModelBoundExceeded {
+        bound,
+        measured,
+        limit,
+        item,
+    } = error
+    else {
+        panic!("the crossed bound must name itself: {error:?}");
+    };
+    assert!(matches!(bound, ModelBound::TypeName), "got {bound:?}");
+    assert_eq!(measured, 255);
+    assert_eq!(limit, 254);
+    assert_eq!(item, "u".repeat(255));
 }
