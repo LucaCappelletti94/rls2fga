@@ -76,6 +76,58 @@ fn an_owner_minus_a_blocklist_keeps_the_memberships_grade() {
 }
 
 #[test]
+fn a_restrictive_blocklist_wrapped_in_a_function_matches_the_inline_clause() {
+    let blocked_escaped = BLOCKED.replace("docs.id", "d").replace('\'', "''");
+    let function = format!(
+        "CREATE FUNCTION is_blocked(d TEXT) RETURNS boolean LANGUAGE sql STABLE
+         SET search_path TO public, pg_catalog, pg_temp
+         AS 'SELECT NOT {blocked_escaped}';"
+    );
+    let inline_sql = format!(
+        "{TABLES} {function}
+         CREATE POLICY docs_read ON docs FOR SELECT USING ({SHARED});
+         CREATE POLICY docs_blocks ON docs AS RESTRICTIVE FOR SELECT USING (NOT {BLOCKED});"
+    );
+    let wrapped_sql = format!(
+        "{TABLES} {function}
+         CREATE POLICY docs_read ON docs FOR SELECT USING ({SHARED});
+         CREATE POLICY docs_blocks ON docs AS RESTRICTIVE FOR SELECT USING (is_blocked(id));"
+    );
+    let translator = translator();
+    let inline = translator.classify(&parse_schema(&inline_sql).expect("schema parses"));
+    let wrapped = translator.classify(&parse_schema(&wrapped_sql).expect("schema parses"));
+    let inline_blocks = inline
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("inline restrictive clause classifies");
+    let wrapped_blocks = wrapped
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("function-wrapped restrictive clause classifies");
+    assert_eq!(wrapped_blocks.confidence, inline_blocks.confidence);
+    let translated = translator
+        .translate(&parse_schema(&wrapped_sql).expect("schema parses"))
+        .expect("translation plans");
+    assert!(
+        translated
+            .notes()
+            .iter()
+            .all(|note| !note.severity().diverges_from_database()),
+        "{:?}",
+        translated.notes()
+    );
+    let blocked = records(&translated, "blocks", "d1", "alice");
+    let shared = records(&translated, "shares", "d1", "alice");
+    assert!(
+        shared.iter().any(|record| record.subject == "user:alice"),
+        "{shared:?}"
+    );
+    assert!(blocked.iter().all(|record| !shared.contains(record)));
+}
+
+#[test]
 fn positive_shares_and_negative_blocks_write_separate_relations() {
     let translated = translate(&schema(&format!("({OWNER} OR {SHARED}) AND NOT {BLOCKED}")));
     let blocked = records(&translated, "blocks", "d1", "alice");
