@@ -18,6 +18,7 @@ use super::subquery::{
     query_binds_its_own_names, select_result_shaping_clause, set_limiting_clause,
 };
 use super::{unparenthesize, unwrap_cast_or_nested};
+use crate::classifier::expansion::ExpansionState;
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::readability::{table_readability, TableReadability};
 use crate::generator::unrestricted::row_level_security_is_off;
@@ -61,6 +62,7 @@ pub(crate) fn residual_relations<DB: DatabaseLike>(
     db: Option<&DB>,
     registry: &FunctionRegistry,
     scope: &MembershipScope<'_>,
+    state: &ExpansionState,
 ) -> Option<Vec<TableId>> {
     let mut names = RelationNames::default();
     if Visit::visit(&*conjunct, &mut names).is_break() {
@@ -83,7 +85,7 @@ pub(crate) fn residual_relations<DB: DatabaseLike>(
             // table is request-gated. The caller the gate excludes sees it empty, so the
             // residual must hold for no row then, or the gate would hide rows it may read.
             if !matches!(
-                table_readability(&identity, db, registry),
+                table_readability(&identity, db, registry, state),
                 TableReadability::RequestGated { .. }
             ) {
                 return None;
@@ -587,7 +589,9 @@ impl<DB: DatabaseLike> VisitorMut for SubstituteEmpty<'_, DB> {
                 subquery, negated, ..
             } => {
                 let negated = *negated;
-                self.placement(subquery, |_| Some(boolean_literal(negated)))
+                self.placement(subquery, |query| {
+                    yields_no_row_when_empty(query).then(|| boolean_literal(negated))
+                })
             }
             Expr::Subquery(query) => self.placement(query, scalar_empty_value),
             _ => Ok(None),
@@ -679,8 +683,21 @@ fn scalar_empty_value(query: &Query) -> Option<Expr> {
     (!contains_aggregate(projection)).then(|| Expr::Value(Value::Null.into()))
 }
 
-/// Whether `expr` calls an aggregate anywhere, which an aggregate-free check would pass.
-fn contains_aggregate(expr: &Expr) -> bool {
+/// Whether `query` yields no row when the table it reads is empty.
+///
+/// An aggregate or a `HAVING` can fold the empty table into one row, so
+/// `EXISTS (SELECT count(*) FROM t)` holds on it.
+fn yields_no_row_when_empty(query: &Query) -> bool {
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return false;
+    };
+    select.having.is_none()
+        && !contains_aggregate(&select.projection)
+        && !contains_aggregate(&query.order_by)
+}
+
+/// Whether `node` calls an aggregate anywhere, which an aggregate-free check would pass.
+fn contains_aggregate(node: &impl Visit) -> bool {
     struct Aggregates;
 
     impl Visitor for Aggregates {
@@ -698,7 +715,7 @@ fn contains_aggregate(expr: &Expr) -> bool {
         }
     }
 
-    expr.visit(&mut Aggregates).is_break()
+    node.visit(&mut Aggregates).is_break()
 }
 
 fn boolean_literal(value: bool) -> Expr {

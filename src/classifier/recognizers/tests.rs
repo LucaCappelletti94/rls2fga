@@ -1716,6 +1716,12 @@ fn residuals_not_proven_false_on_an_empty_gated_table_are_refused() {
         // An outer subquery over another table still stands after the inner one empties.
         "s.weight > (SELECT max(cutoff) FROM tiers \
          WHERE cutoff < (SELECT max(weight) FROM paper_shares))",
+        // An ungrouped aggregate yields one row on the empty table, so `EXISTS` holds.
+        "EXISTS (SELECT count(*) FROM paper_shares)",
+        // `HAVING` folds the empty table into one row as well.
+        "EXISTS (SELECT 1 FROM paper_shares HAVING true)",
+        // That row is `0`, so `IN` finds it.
+        "0 IN (SELECT count(*) FROM paper_shares)",
     ] {
         assert!(gated_refuses(residual), "{residual} must be refused");
     }

@@ -24,7 +24,7 @@ use crate::parser::names::{
     unquote_identifier,
 };
 use crate::parser::sql_parser::{DatabaseLike, FunctionLike, RoleLike, TableLike};
-use crate::types::ColumnName;
+use crate::types::{ColumnName, TableId};
 
 /// Expansions one classification may perform, bounding the work a schema can
 /// demand: a body that doubles its calls per level is cut here rather than
@@ -38,6 +38,9 @@ const EXPANSION_BUDGET: u32 = 32;
 /// than resetting with it.
 pub struct ExpansionState {
     in_flight: RefCell<Vec<String>>,
+    /// Tables whose readability a walk of their policies is deciding, which a residual
+    /// inside that walk cannot lean on.
+    readability_in_flight: RefCell<Vec<TableId>>,
     budget: Cell<u32>,
     owner_reads: Cell<u32>,
 }
@@ -48,6 +51,7 @@ impl ExpansionState {
     pub fn new() -> Self {
         Self {
             in_flight: RefCell::new(Vec::new()),
+            readability_in_flight: RefCell::new(Vec::new()),
             budget: Cell::new(EXPANSION_BUDGET),
             owner_reads: Cell::new(0),
         }
@@ -72,6 +76,22 @@ impl ExpansionState {
 
     pub(crate) fn leave(&self) {
         self.in_flight.borrow_mut().pop();
+    }
+
+    /// Run `walk` deciding the readability of `table`, or [`None`] where a walk of the
+    /// same table is already deciding it further up.
+    pub(crate) fn deciding_readability<T>(
+        &self,
+        table: &TableId,
+        walk: impl FnOnce() -> T,
+    ) -> Option<T> {
+        if self.readability_in_flight.borrow().contains(table) {
+            return None;
+        }
+        self.readability_in_flight.borrow_mut().push(table.clone());
+        let decided = walk();
+        self.readability_in_flight.borrow_mut().pop();
+        Some(decided)
     }
 
     /// True while a definer body whose reads provably bypass row level security

@@ -5,6 +5,7 @@
 
 use super::*;
 
+use crate::classifier::expansion::ExpansionState;
 use crate::classifier::recognizers::{resolve_membership_pairing, MembershipPairing};
 
 pub(super) struct MembershipSourceGate<'a> {
@@ -397,12 +398,12 @@ pub(super) fn apply_membership_read_scope<DB: DatabaseLike>(
             .relations()
             .iter()
             .filter(|relation| *relation != join_table)
-            .filter_map(
-                |relation| match table_readability(relation, ctx.db, ctx.registry) {
+            .filter_map(|relation| {
+                match table_readability(relation, ctx.db, ctx.registry, &ExpansionState::new()) {
                     TableReadability::RequestGated { gates } => Some(gates),
                     _ => None,
-                },
-            )
+                }
+            })
             .flatten()
             .collect()
     };

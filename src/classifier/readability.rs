@@ -8,12 +8,13 @@
 use crate::no_std_prelude::*;
 use alloc::collections::BTreeSet;
 
+use crate::classifier::expansion::ExpansionState;
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::{
     derive_policy_mode, derive_scoped_roles, policy_covers_reads, PatternClass, PolicyCommand,
     PolicyMode,
 };
-use crate::classifier::policy_classifier::classify_expr;
+use crate::classifier::policy_classifier::classify_expr_in_state;
 use crate::classifier::recognizers::{constant_bool_value, is_constantly_false};
 use crate::parser::names::{lookup_table_id, table_identity};
 use crate::parser::sql_parser::{DatabaseLike, PolicyLike, TableLike};
@@ -43,10 +44,15 @@ pub(crate) enum TableReadability {
 
 /// The read determination for `table`, the shared policy walk behind both the classifier's
 /// residual check and the generator's membership scope.
+///
+/// A policy of `table` can hold a residual whose check asks for this very answer, so a walk
+/// reached from inside its own walk answers [`TableReadability::Guarded`], having proven
+/// nothing row independent.
 pub(crate) fn table_readability<DB: DatabaseLike>(
     table: &TableId,
     db: &DB,
     registry: &FunctionRegistry,
+    state: &ExpansionState,
 ) -> TableReadability {
     let Some(table) = lookup_table_id(db, table) else {
         return TableReadability::Open;
@@ -55,13 +61,27 @@ pub(crate) fn table_readability<DB: DatabaseLike>(
     if rls == Ok(false) {
         return TableReadability::Open;
     }
+    let identity = table_identity(table);
+    state
+        .deciding_readability(&identity, || {
+            walk_policies(table, &identity, rls == Ok(true), db, registry, state)
+        })
+        .unwrap_or(TableReadability::Guarded { roles: Vec::new() })
+}
 
+fn walk_policies<DB: DatabaseLike>(
+    table: &DB::Table,
+    identity: &TableId,
+    rls_on: bool,
+    db: &DB,
+    registry: &FunctionRegistry,
+    state: &ExpansionState,
+) -> TableReadability {
     let mut roles = BTreeSet::new();
     let mut grants_read = false;
     let mut grants_read_unscoped = false;
-    let mut row_independent = rls == Ok(true);
+    let mut row_independent = rls_on;
     let mut gates = Vec::new();
-    let identity = table_identity(table);
     for policy in table.policies(db).into_iter().flatten() {
         if !policy_covers_reads(policy) {
             continue;
@@ -79,12 +99,13 @@ pub(crate) fn table_readability<DB: DatabaseLike>(
             if !policy.applies_to_public() {
                 row_independent = false;
             } else if row_independent && constant_bool_value(using) != Some(true) {
-                let pattern = classify_expr(
+                let pattern = classify_expr_in_state(
                     using,
                     db,
                     registry,
                     &identity.to_string(),
                     PolicyCommand::Select,
+                    state,
                 )
                 .pattern;
                 if is_request_only_gate(&pattern) {

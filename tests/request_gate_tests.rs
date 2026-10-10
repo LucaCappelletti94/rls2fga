@@ -339,3 +339,40 @@ fn a_residual_over_a_request_gated_relation_translates() {
         "the grant intersects the residual's table gate, got: {can_select}\n{dsl}"
     );
 }
+
+/// A restrictive membership on `papers` whose residual reads `papers` asks for the
+/// readability of the table being decided. `PostgreSQL` refuses the read as a recursion,
+/// so the translation grants none instead of recursing.
+#[test]
+fn a_residual_reading_the_table_its_gate_decides_grants_no_read() {
+    let sql = "
+CREATE TABLE papers (id UUID PRIMARY KEY);
+CREATE TABLE paper_shares (id UUID PRIMARY KEY, paper_id UUID REFERENCES papers(id), viewer TEXT);
+ALTER TABLE papers ENABLE ROW LEVEL SECURITY;
+CREATE POLICY paper_open ON papers FOR SELECT USING (true);
+CREATE POLICY paper_cap ON papers AS RESTRICTIVE FOR SELECT USING (
+    EXISTS (
+        SELECT 1
+        FROM paper_shares s
+        WHERE s.paper_id = papers.id
+          AND s.viewer = current_setting('app.user_id', true)
+          AND (SELECT max(id::text) FROM papers) IS NULL
+    )
+);
+";
+    let dsl = TranslatorBuilder::new()
+        .with_session_attributes([SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )])
+        .build()
+        .translate(&db_of(sql))
+        .expect("translation should plan")
+        .outputs_accepting_gaps()
+        .model();
+    assert_eq!(
+        relation_definition(&dsl, "papers", "can_select").as_deref(),
+        Some("no_access"),
+        "{dsl}"
+    );
+}

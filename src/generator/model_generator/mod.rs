@@ -3,6 +3,7 @@ use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::fmt::Write;
 
+use crate::classifier::expansion::ExpansionState;
 use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
 use crate::classifier::readability::{table_readability, ReadGate, TableReadability};
@@ -2084,7 +2085,7 @@ fn join_table_readability<'a, DB: DatabaseLike>(
     memo: &'a mut BTreeMap<TableId, TableReadability>,
 ) -> &'a TableReadability {
     memo.entry(join_table.clone())
-        .or_insert_with(|| table_readability(join_table, db, registry))
+        .or_insert_with(|| table_readability(join_table, db, registry, &ExpansionState::new()))
 }
 
 /// Returns the membership read constraints, or `None` when no row is visible.
