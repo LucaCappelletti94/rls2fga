@@ -32,10 +32,9 @@ pub struct RelationShapes {
 /// those shapes yield any record, [`Self::Any`] is the union of its children and
 /// [`Self::All`] their intersection.
 ///
-/// `#[non_exhaustive]`: a shape the analysis learns to decide adds a variant, and a
-/// caller matching this outside the crate keeps a wildcard arm.
+/// Exhaustive on purpose, so a consumer that has not learned a new shape fails to compile
+/// rather than treating it as one it knows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum RowDecision {
     /// The subjects are the records these shapes produce for this row.
     Leaf {
@@ -76,16 +75,56 @@ pub enum RowDecision {
         /// How the two sides are compared.
         comparison: RequestComparison,
     },
+    /// Every subject of `subject_type` on a row that yields its link, while the caller's
+    /// request satisfies the predicate. The predicate reads no column,
+    /// so it decides every row of the type alike.
+    Request {
+        /// The direct relation linking the row to the object holding its request gates.
+        /// Always on the same type.
+        relation: RelationName,
+        /// The shapes filling that link, identical to that relation's own entry. Never
+        /// empty.
+        shapes: Vec<RecordDescription>,
+        /// The type the gate admits, as its typed wildcard. A subject of any other type,
+        /// and any userset, is refused.
+        subject_type: TypeName,
+        /// What the caller's request has to satisfy.
+        predicate: RequestPredicate,
+    },
 }
 
 /// How a request-gated relation compares the row's side against the caller's.
-///
-/// `#[non_exhaustive]` permits more comparisons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[non_exhaustive]
 pub enum RequestComparison {
     /// The caller's set has to hold the row's value.
     CallerSetHolds,
     /// The caller's single value has to equal the row's.
     CallerValueEquals,
+}
+
+/// A predicate over the values the caller supplies in every check context.
+///
+/// In canonical form children are sorted and distinct, an [`Self::Any`] never directly
+/// holds another [`Self::Any`] nor an [`Self::All`] another [`Self::All`], and either holds
+/// at least two children.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RequestPredicate {
+    /// One test of a request value against a constant the policy names.
+    Holds(RequestAtom),
+    /// Any child holds.
+    Any(Vec<RequestPredicate>),
+    /// Every child holds.
+    All(Vec<RequestPredicate>),
+}
+
+/// One test of a request value against a constant the policy names.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RequestAtom {
+    /// Parameter the caller supplies its value as, in every check context.
+    pub request_parameter: String,
+    /// How the caller's value is compared against [`Self::value`]. `PostgreSQL` reads an
+    /// unset setting as `NULL`, which fails the test.
+    pub comparison: RequestComparison,
+    /// The constant the policy names.
+    pub value: String,
 }

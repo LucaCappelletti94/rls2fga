@@ -36,14 +36,18 @@ pub(crate) async fn write_authorization_model(
         .expect("authorization model write should succeed")
 }
 
-pub(crate) async fn write_tuples(client: &OpenFgaClient<Channel>, tuples: Vec<TupleKey>) {
-    if tuples.is_empty() {
-        return;
+/// Tuples `OpenFGA` accepts in one write by default.
+const MAX_TUPLES_PER_WRITE: usize = 100;
+
+pub(crate) async fn write_tuples(client: &OpenFgaClient<Channel>, mut tuples: Vec<TupleKey>) {
+    while !tuples.is_empty() {
+        let rest = tuples.split_off(tuples.len().min(MAX_TUPLES_PER_WRITE));
+        client
+            .write(tuples, None)
+            .await
+            .expect("tuple write should succeed");
+        tuples = rest;
     }
-    client
-        .write(tuples, None)
-        .await
-        .expect("tuple write should succeed");
 }
 
 pub(crate) async fn check_allowed(

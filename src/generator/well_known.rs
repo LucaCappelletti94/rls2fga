@@ -26,6 +26,10 @@ pub const NOBODY_TYPE: &str = "nobody";
 /// Default type standing for the set of roles one policy's scope admits.
 pub const PG_ROLE_SCOPE_TYPE: &str = "pg_role_scope";
 
+/// Default type holding the gates that read only the request, one object per guarded
+/// type.
+pub const REQUEST_GATE_TYPE: &str = "request_gate";
+
 /// Caller-chosen type names the generator treats as its own vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WellKnownTypes {
@@ -33,11 +37,12 @@ pub struct WellKnownTypes {
     pub(crate) team: TypeName,
     pub(crate) pg_role: TypeName,
     pub(crate) pg_role_scope: TypeName,
+    pub(crate) request_gate: TypeName,
     pub(crate) nobody: TypeName,
 }
 
 impl WellKnownTypes {
-    /// Validate the five configured type names and their shared namespace.
+    /// Validate the six configured type names and their shared namespace.
     ///
     /// # Errors
     ///
@@ -47,27 +52,25 @@ impl WellKnownTypes {
         team: impl Into<String>,
         pg_role: impl Into<String>,
         pg_role_scope: impl Into<String>,
+        request_gate: impl Into<String>,
         nobody: impl Into<String>,
     ) -> Result<Self, WellKnownTypesError> {
         let parse = |setting, name| {
             TypeName::try_from(name)
                 .map_err(|source| WellKnownTypesError::InvalidTypeName { setting, source })
         };
-        let user = parse("user", user.into())?;
-        let team = parse("team", team.into())?;
-        let pg_role = parse("pg_role", pg_role.into())?;
-        let pg_role_scope = parse("pg_role_scope", pg_role_scope.into())?;
-        let nobody = parse("nobody", nobody.into())?;
+        let names = Self {
+            user: parse("user", user.into())?,
+            team: parse("team", team.into())?,
+            pg_role: parse("pg_role", pg_role.into())?,
+            pg_role_scope: parse("pg_role_scope", pg_role_scope.into())?,
+            request_gate: parse("request_gate", request_gate.into())?,
+            nobody: parse("nobody", nobody.into())?,
+        };
 
-        let names = [
-            ("user", &user),
-            ("team", &team),
-            ("pg_role", &pg_role),
-            ("pg_role_scope", &pg_role_scope),
-            ("nobody", &nobody),
-        ];
-        for (index, (first_setting, first_name)) in names.iter().enumerate() {
-            for (second_setting, second_name) in names.iter().skip(index.saturating_add(1)) {
+        let reserved = names.reserved();
+        for (index, (first_setting, first_name)) in reserved.iter().enumerate() {
+            for (second_setting, second_name) in reserved.iter().skip(index.saturating_add(1)) {
                 if first_name == second_name {
                     return Err(WellKnownTypesError::DuplicateTypeName {
                         first_setting,
@@ -78,13 +81,7 @@ impl WellKnownTypes {
             }
         }
 
-        Ok(Self {
-            user,
-            team,
-            pg_role,
-            pg_role_scope,
-            nobody,
-        })
+        Ok(names)
     }
 
     /// Type of database users.
@@ -111,18 +108,25 @@ impl WellKnownTypes {
         &self.pg_role_scope
     }
 
+    /// Type of the objects holding the gates that read only the request.
+    #[must_use]
+    pub fn request_gate(&self) -> &TypeName {
+        &self.request_gate
+    }
+
     /// Type that cannot grant any caller.
     #[must_use]
     pub fn nobody(&self) -> &TypeName {
         &self.nobody
     }
 
-    pub(crate) fn reserved(&self) -> [(&'static str, &TypeName); 5] {
+    pub(crate) fn reserved(&self) -> [(&'static str, &TypeName); 6] {
         [
             ("user", &self.user),
             ("team", &self.team),
             ("pg_role", &self.pg_role),
             ("pg_role_scope", &self.pg_role_scope),
+            ("request_gate", &self.request_gate),
             ("nobody", &self.nobody),
         ]
     }
@@ -160,9 +164,16 @@ impl Default for WellKnownTypes {
             team: TypeName::canonicalized(TEAM_TYPE),
             pg_role: TypeName::canonicalized(PG_ROLE_TYPE),
             pg_role_scope: TypeName::canonicalized(PG_ROLE_SCOPE_TYPE),
+            request_gate: TypeName::canonicalized(REQUEST_GATE_TYPE),
             nobody: TypeName::canonicalized(NOBODY_TYPE),
         }
     }
+}
+
+/// Relation linking a guarded row to the object holding its request gates.
+#[must_use]
+pub fn request_gate_link_relation() -> RelationName {
+    RelationName::canonicalized("request_gate")
 }
 
 /// Relation on [`PG_ROLE_SCOPE_TYPE`] holding the roles a scope admits.

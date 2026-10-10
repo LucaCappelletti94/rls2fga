@@ -3,7 +3,6 @@
 //! Split out of one 9441-line file so each family runs on its own. A helper only one
 //! family uses lives with that family instead.
 
-use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use rls2fga::classifier::patterns::{PatternClass, UnclassifiedExpr};
 use rls2fga::generator::tuple_generator::{format_tuples, TupleQuery};
 use rls2fga::generator::well_known::{NOBODY_TYPE, USER_TYPE};
@@ -24,26 +23,38 @@ pub(crate) fn translator(min_confidence: ConfidenceLevel) -> Translator {
         .build()
 }
 
-/// Two `OR` arms of one RESTRICTIVE gate, each a condition of its own, on a table and
-/// policy whose names push the first condition's name to `OpenFGA`'s 50-character cap.
-pub(crate) const CAPPED_GATE_ARMS: &str = r"
-CREATE TABLE r5b_notes (id INT PRIMARY KEY, body TEXT);
-ALTER TABLE r5b_notes ENABLE ROW LEVEL SECURITY;
-CREATE POLICY r5b_notes_all ON r5b_notes FOR ALL USING (true);
-CREATE POLICY r5b_notes_connetto_cap_read ON r5b_notes AS RESTRICTIVE FOR SELECT USING (
-  'r5b_notes:read' = ANY(string_to_array(current_setting('app.bot_list', true), ','))
-  OR '*' = ANY(string_to_array(current_setting('app.bot_list', true), ',')));
-";
+/// A table its owner reads and writes, limited per command by four RESTRICTIVE gates on
+/// the caller's declared list `app.bot_list`, each admitting the list's entry for the
+/// command (`<table>:read` and so on) or `*`.
+pub(crate) fn gated_table(table: &str) -> String {
+    let arm = |verb: &str| {
+        format!(
+            "('{table}:{verb}' = ANY(string_to_array(current_setting('app.bot_list', true), ',')) \
+             OR '*' = ANY(string_to_array(current_setting('app.bot_list', true), ',')))"
+        )
+    };
+    format!(
+        "CREATE TABLE {table} (id TEXT PRIMARY KEY, owner TEXT NOT NULL);
+ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;
+CREATE POLICY {table}_own ON {table} FOR ALL USING (owner = current_setting('app.user_id', true))
+  WITH CHECK (owner = current_setting('app.user_id', true));
+CREATE POLICY {table}_cap_read ON {table} AS RESTRICTIVE FOR SELECT USING {read};
+CREATE POLICY {table}_cap_insert ON {table} AS RESTRICTIVE FOR INSERT WITH CHECK {insert};
+CREATE POLICY {table}_cap_update ON {table} AS RESTRICTIVE FOR UPDATE USING {update} WITH CHECK {update};
+CREATE POLICY {table}_cap_delete ON {table} AS RESTRICTIVE FOR DELETE USING {delete};
+",
+        read = arm("read"),
+        insert = arm("insert"),
+        update = arm("update"),
+        delete = arm("delete"),
+    )
+}
 
-/// Translator reading `app.bot_list` as the set [`CAPPED_GATE_ARMS`] gates on.
-pub(crate) fn capped_gate_arms_translator() -> Translator {
-    TranslatorBuilder::new()
-        .with_min_confidence(ConfidenceLevel::B)
-        .with_session_attributes([SessionAttribute::setting(
-            "app.bot_list",
-            SessionAttributeKind::SetAttribute,
-        )])
-        .build()
+/// [`gated_table`] repeated as `t0` to `t<count - 1>`.
+pub(crate) fn gated_tables(count: usize) -> String {
+    (0..count)
+        .map(|index| gated_table(&format!("t{index}")))
+        .collect()
 }
 
 /// The `define <name>: <body>` lines inside `type <type_name>`, in declaration order.

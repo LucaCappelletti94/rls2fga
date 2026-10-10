@@ -1098,7 +1098,7 @@ fn analyze_membership_select<DB: DatabaseLike>(
     let MembershipMatches {
         mut matches,
         uncorrelated,
-    } = membership_matches(select, &all_sources, db, registry, outer_table);
+    } = membership_matches(select, &all_sources, db, registry, outer_table, state);
     if matches.len() > 1 {
         return MembershipSelectAnalysis::AmbiguousMultiple;
     }
@@ -1160,6 +1160,7 @@ fn analyze_membership_select<DB: DatabaseLike>(
                     &source,
                     &predicates.selection,
                     registry,
+                    state,
                 )
             })
             .unwrap_or(MembershipSelectAnalysis::AmbiguousNoUniqueJoin),
@@ -1205,6 +1206,7 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
     source: &RelationSource,
     predicates: &[AnalyzedMembershipPredicate<'_>],
     registry: &FunctionRegistry,
+    state: &ExpansionState,
 ) -> Option<MembershipSelectAnalysis> {
     if select.from.iter().any(|item| !item.joins.is_empty()) {
         return None;
@@ -1266,6 +1268,7 @@ fn analyze_uncorrelated_membership<DB: DatabaseLike>(
                 columns: &columns,
                 guarded_table: outer_table,
             },
+            state,
         )?;
         let residual = residual_predicate_reading(&normalized, relations);
         if residual.relations.is_empty()
@@ -1883,6 +1886,7 @@ fn membership_matches<'a, DB: DatabaseLike>(
     db: &DB,
     registry: &FunctionRegistry,
     outer_table: &str,
+    state: &ExpansionState,
 ) -> MembershipMatches<'a> {
     let mut matches = Vec::new();
     let mut uncorrelated = None;
@@ -1916,6 +1920,7 @@ fn membership_matches<'a, DB: DatabaseLike>(
             Some(db),
             &predicates,
             registry,
+            state,
         ) {
             matches.push((source.table_name.clone(), columns));
         }
@@ -2198,7 +2203,14 @@ fn extract_membership_columns_with_db<DB: DatabaseLike>(
 ) -> Option<MembershipColumns> {
     let predicates =
         analyze_membership_predicates(select, scope.table, scope.alias, scope.columns, registry);
-    extract_membership_columns_with_analysis(select, scope, db, &predicates, registry)
+    extract_membership_columns_with_analysis(
+        select,
+        scope,
+        db,
+        &predicates,
+        registry,
+        &ExpansionState::new(),
+    )
 }
 
 fn extract_membership_columns_with_analysis<DB: DatabaseLike>(
@@ -2207,6 +2219,7 @@ fn extract_membership_columns_with_analysis<DB: DatabaseLike>(
     db: Option<&DB>,
     analyzed_predicates: &MembershipPredicateAnalyses<'_>,
     registry: &FunctionRegistry,
+    state: &ExpansionState,
 ) -> Option<MembershipColumns> {
     let MembershipScope {
         table: join_table,
@@ -2280,7 +2293,7 @@ fn extract_membership_columns_with_analysis<DB: DatabaseLike>(
         // from the row alone would answer a different question than the caller's check
         // does, unless every relation it reads answers everybody alike. A recognized
         // request value keeps its own route.
-        let relations = residual_relations(&mut normalized_pred, db, registry, scope)?;
+        let relations = residual_relations(&mut normalized_pred, db, registry, scope, state)?;
         let residual = residual_predicate_reading(&normalized_pred, relations);
         if residual.relations.is_empty()
             && residual.request.is_none()

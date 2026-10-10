@@ -15,10 +15,10 @@ use crate::classifier::patterns::{
 use crate::generator::db_lookup::{column_kind, list_element_kind};
 use crate::generator::identity::encode_part;
 use crate::generator::ir::TupleSource;
-use crate::generator::model_generator::RowParameter;
 use crate::generator::tuple_generator::{quote_sql_identifier, resolve_bridge_columns, TupleQuery};
 use crate::generator::well_known::{member_relation, WellKnownTypes, HOLDER_OBJECT_ID};
 use crate::parser::sql_parser::DatabaseLike;
+use crate::types::RecordContextValue;
 use crate::types::{
     BoundQuery, ColumnKind, ColumnRead, ContextRendering, Guard, ObjectKey, Record, RecordContext,
     RecordContextEntry, RecordDerivation, RecordDescription, RecordTemplate, ReplayScope,
@@ -617,6 +617,32 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             },
         }),
 
+        // The constant a gate tests follows from the policy, so the fact is the whole
+        // description, exactly as for the roles a scope admits.
+        TupleSource::RequestGateEntry {
+            gate_type,
+            gate_object,
+            relation,
+            condition,
+            row_parameter,
+            atom,
+        } => Some(RecordDescription {
+            tables: Vec::new(),
+            derivation: RecordDerivation::Constant {
+                record: Record {
+                    object: format!("{gate_type}:{}", encode_part(gate_object)),
+                    relation: relation.clone(),
+                    subject: format!("{}:*", well_known.user),
+                    context: Some(RecordContextValue {
+                        condition: condition.clone(),
+                        values: [(row_parameter.clone(), atom.value.clone())]
+                            .into_iter()
+                            .collect(),
+                    }),
+                },
+            },
+        }),
+
         // The guard reaches the description as structure, so the evaluator applies
         // the same comparison the query puts in its WHERE.
         TupleSource::AttributeGate {
@@ -696,42 +722,28 @@ pub(crate) fn describe_tuple_source<DB: DatabaseLike>(
             identity_cols,
             relation,
             row_parameter,
+            column,
             condition,
             ..
-        } => {
-            let (value, guards) = match row_parameter {
-                // The guard is subsumed: `records_from_row` already yields no record
-                // when the context value is missing, so removing it kills no test.
-                // Kept only because five sibling shapes state the same guard, and
-                // dropping one of six would read as an exception rather than a rule.
-                RowParameter::Column { column, .. } => (
-                    value_column(table, column, db),
-                    vec![not_null(table, column, db)],
-                ),
-                RowParameter::Literal { value, .. } => {
-                    (ValueSource::Literal(value.clone()), Vec::new())
-                }
-            };
-            Some(described(
-                table,
-                RecordTemplate {
-                    object_type: owner_type.clone(),
-                    object_key: ObjectKey::new(key_parts(table, identity_cols, db)),
-                    relation: relation.clone(),
-                    subject_type: well_known.user.clone(),
-                    subject_key: SubjectKey::wildcard(),
-                    context: Some(RecordContext {
-                        condition: condition.clone(),
-                        entries: vec![RecordContextEntry {
-                            key: row_parameter.parameter().to_string(),
-                            value,
-                            rendering: ContextRendering::SqlText,
-                        }],
-                    }),
-                },
-                guards,
-            ))
-        }
+        } => Some(described(
+            table,
+            RecordTemplate {
+                object_type: owner_type.clone(),
+                object_key: ObjectKey::new(key_parts(table, identity_cols, db)),
+                relation: relation.clone(),
+                subject_type: well_known.user.clone(),
+                subject_key: SubjectKey::wildcard(),
+                context: Some(RecordContext {
+                    condition: condition.clone(),
+                    entries: vec![RecordContextEntry {
+                        key: row_parameter.clone(),
+                        value: value_column(table, column, db),
+                        rendering: ContextRendering::SqlText,
+                    }],
+                }),
+            },
+            vec![not_null(table, column, db)],
+        )),
 
         // The record is a function of the share row alone: the object is keyed on the
         // share's own primary key, and the comparison the request completes travels in

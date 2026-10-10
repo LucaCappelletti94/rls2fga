@@ -378,6 +378,28 @@ impl Outputs {
         json_model_from_plan(&self.0.plan)
     }
 
+    /// The number of types the written model declares.
+    ///
+    /// Compare it with the server's `maxTypesPerAuthorizationModel` setting, which
+    /// `openfga/openfga` `pkg/server/config/config.go` defaults to 100. A count above it
+    /// is the server's refusal under its own configuration, not a translation error.
+    #[must_use]
+    pub fn type_count(&self) -> usize {
+        self.0.plan.types.len()
+    }
+
+    /// The size `OpenFGA` compares with its `maxAuthorizationModelSizeInBytes` setting,
+    /// as [`crate::client::model_size_in_bytes`] measures it.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::client::WriteModelError::Untranslatable`] when the model does not
+    /// translate into the client's types.
+    #[cfg(feature = "client")]
+    pub fn model_size_in_bytes(&self) -> Result<usize, crate::client::WriteModelError> {
+        crate::client::model_size_in_bytes(&self.json_model())
+    }
+
     /// SQL that populates the relationship tuples.
     #[must_use]
     pub fn tuple_queries(&self) -> &[TupleQuery] {

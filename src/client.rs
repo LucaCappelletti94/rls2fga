@@ -18,6 +18,7 @@ use openfga_client::tonic::body::Body;
 use openfga_client::tonic::client::GrpcService;
 use openfga_client::tonic::codegen::{Body as ResponseBody, Bytes, StdError};
 use openfga_client::tonic::Status;
+use prost::Message;
 
 use crate::generator::json_model::AuthorizationModel;
 
@@ -57,9 +58,7 @@ where
     T::ResponseBody: ResponseBody<Data = Bytes> + Send + 'static,
     <T::ResponseBody as ResponseBody>::Error: Into<StdError> + Send,
 {
-    let value = serde_json::to_value(model).map_err(WriteModelError::Untranslatable)?;
-    let proto: ProtoModel =
-        serde_json::from_value(value).map_err(WriteModelError::Untranslatable)?;
+    let proto = proto_model(model)?;
 
     // Spelled field by field rather than deserialized straight into the request, so
     // a field the request grows is a compile error here instead of a silent omission.
@@ -74,4 +73,29 @@ where
         .map_err(WriteModelError::Refused)?;
 
     Ok(response.into_inner().authorization_model_id)
+}
+
+/// The size `OpenFGA` compares with its `maxAuthorizationModelSizeInBytes` setting
+/// (256 KiB by default in `openfga/openfga` `pkg/server/config/config.go`) before it
+/// stores `model`.
+///
+/// The server measures the protobuf encoding of the model it is about to store, which
+/// carries the 26-character id it assigns, so the same id length is counted here.
+///
+/// # Errors
+///
+/// [`WriteModelError::Untranslatable`] when the emitted model and the client's types
+/// disagree, exactly as [`write_authorization_model`] would report.
+pub fn model_size_in_bytes(model: &AuthorizationModel) -> Result<usize, WriteModelError> {
+    let mut proto = proto_model(model)?;
+    proto.id = "0".repeat(STORED_MODEL_ID_LEN);
+    Ok(proto.encoded_len())
+}
+
+/// Length of the ULID the server assigns a stored model.
+const STORED_MODEL_ID_LEN: usize = 26;
+
+fn proto_model(model: &AuthorizationModel) -> Result<ProtoModel, WriteModelError> {
+    let value = serde_json::to_value(model).map_err(WriteModelError::Untranslatable)?;
+    serde_json::from_value(value).map_err(WriteModelError::Untranslatable)
 }

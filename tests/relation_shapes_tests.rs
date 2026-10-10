@@ -27,7 +27,9 @@ use rls2fga::types::{
     ValueSource,
 };
 use rls2fga::types::{ColumnName, RelationName, TableId};
-use rls2fga::types::{RelationShapes, RowDecision};
+use rls2fga::types::{
+    RelationShapes, RequestAtom, RequestComparison, RequestPredicate, RowDecision,
+};
 
 mod support;
 
@@ -1462,38 +1464,6 @@ fn conditional_wildcards(json: &str) -> Vec<(String, String, String)> {
     found
 }
 
-/// A condition is global to the model while the guard it expresses belongs to one table,
-/// so two types sharing one condition means one of them is answering with the other's
-/// rule. Nothing about the model itself forbids the sharing, which is why this is checked
-/// rather than assumed.
-#[test]
-fn no_condition_is_shared_by_two_types() {
-    let mut checked = 0usize;
-    for fixture in support::fixture_names() {
-        let (classified, db, registry) = support::try_load_fixture_classified(&fixture);
-        let planned = support::plan_at(classified, &db, &registry, ConfidenceLevel::B);
-        let json = serde_json::to_string(&planned.json_model()).expect("the model serializes");
-        let mut owners: std::collections::BTreeMap<String, BTreeSet<String>> =
-            std::collections::BTreeMap::new();
-        for (type_name, _, condition) in conditional_wildcards(&json) {
-            checked += 1;
-            owners.entry(condition).or_default().insert(type_name);
-        }
-        for (condition, types) in owners {
-            assert_eq!(
-                types.len(),
-                1,
-                "{fixture}: condition '{condition}' is referenced by {types:?}, so one of them \
-                 carries the other's guard"
-            );
-        }
-    }
-    assert!(
-        checked > 0,
-        "no fixture exercises a condition, so this invariant checks nothing"
-    );
-}
-
 /// A condition reads its row's value under a parameter name, and the tuple supplies that
 /// value under a context key. The two are minted apart, and a mismatch denies every check
 /// on the type while the model and the SQL each look right alone.
@@ -1667,7 +1637,19 @@ fn recipe_leaves(decision: &RowDecision) -> Vec<Leaf<'_>> {
         RowDecision::Any(children) | RowDecision::All(children) => {
             children.iter().flat_map(recipe_leaves).collect()
         }
-        other => panic!("a recipe shape this test cannot read: {other:?}"),
+        // Its link names the gate object rather than a user, so it adds no user leaf.
+        RowDecision::Request { .. } => Vec::new(),
+    }
+}
+
+/// Whether a recipe reaches a predicate the check context decides with no record.
+fn reaches_the_request(decision: &RowDecision) -> bool {
+    match decision {
+        RowDecision::Request { .. } => true,
+        RowDecision::Any(children) | RowDecision::All(children) => {
+            children.iter().any(reaches_the_request)
+        }
+        _ => false,
     }
 }
 
@@ -1854,7 +1836,7 @@ fn every_leaf_of_every_recipe_names_a_user_from_the_objects_own_row() {
             };
             let reached = recipe_leaves(decision);
             assert!(
-                !reached.is_empty(),
+                !reached.is_empty() || reaches_the_request(decision),
                 "{fixture}: {}#{} reports a recipe reaching no leaf, which grants either \
                  nobody or everybody depending on how it composes",
                 reported.type_name,
@@ -2413,20 +2395,9 @@ fn the_session_attribute_fixtures_translate_or_scar_what_is_left() {
         (
             "supabase_mfa_restrictive",
             &[],
-            &[
-                "documents#can_select",
-                "documents#gate_documents_mfa_e65d3d44",
-                "documents#owner",
-            ],
+            &["documents#can_select", "documents#owner"],
         ),
-        (
-            "claims_role_gate",
-            &[],
-            &[
-                "audit_log#can_select",
-                "audit_log#gate_audit_admin_02ce9ca4",
-            ],
-        ),
+        ("claims_role_gate", &[], &["audit_log#can_select"]),
     ];
 
     for (fixture, scars, decidable) in expected {
@@ -3778,26 +3749,26 @@ fn an_open_table_under_a_request_gate_is_decided_without_a_round_trip() {
     assert!(open.from_one_row, "the open arm reads nothing but the row");
     assert_eq!(open.decision.as_ref(), Some(&everyone));
 
-    let gates: Vec<RowDecision> = shapes
-        .iter()
-        .filter(|reported| {
-            reported
-                .relation
-                .as_str()
-                .starts_with("gate_orders_cap_read")
+    let holds = |value: &str| {
+        RequestPredicate::Holds(RequestAtom {
+            request_parameter: "app_bot_list".to_string(),
+            comparison: RequestComparison::CallerSetHolds,
+            value: value.to_string(),
         })
-        .map(|reported| {
-            reported
-                .decision
-                .clone()
-                .expect("a request-only gate is decided by the request")
-        })
-        .collect();
-    assert_eq!(gates.len(), 2, "one gate per arm of the OR");
+    };
+    let link = entry(&shapes, "orders", "request_gate");
     assert_eq!(
         entry(&shapes, "orders", "can_select").decision,
-        Some(RowDecision::All(vec![everyone, RowDecision::Any(gates)])),
-        "the read is the open arm intersected with the gate"
+        Some(RowDecision::All(vec![
+            everyone,
+            RowDecision::Request {
+                relation: link.relation.clone(),
+                shapes: link.shapes.clone(),
+                subject_type: TypeName::canonicalized(USER_TYPE),
+                predicate: RequestPredicate::Any(vec![holds("*"), holds("orders:read")]),
+            },
+        ])),
+        "the read is the open arm intersected with the gate the request decides"
     );
 }
 

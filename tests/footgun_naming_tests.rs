@@ -5,8 +5,8 @@
 
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::generator::well_known::{
-    WellKnownTypes, WellKnownTypesError, NOBODY_TYPE, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE, TEAM_TYPE,
-    USER_TYPE,
+    WellKnownTypes, WellKnownTypesError, NOBODY_TYPE, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE,
+    REQUEST_GATE_TYPE, TEAM_TYPE, USER_TYPE,
 };
 use rls2fga::translator::{Translator, TranslatorBuilder};
 use rls2fga::types::ConfidenceLevel;
@@ -14,9 +14,8 @@ use rls2fga::types::ConfidenceLevel;
 mod support;
 
 use support::footgun::{
-    assert_model_is_internally_consistent, capped_gate_arms_translator, db_of, is_structural_type,
-    relation_definition, relation_definitions, translator, tuples_reading_from, type_names,
-    CAPPED_GATE_ARMS,
+    assert_model_is_internally_consistent, db_of, is_structural_type, relation_definition,
+    relation_definitions, translator, tuples_reading_from, type_names,
 };
 
 const COLLIDING_SCHEMAS: &str = r"
@@ -579,37 +578,6 @@ fn generated_names_respect_openfga_length_limits() {
     assert!(relations > 5, "expected a populated model, got:\n{dsl}");
 }
 
-/// `OpenFGA` caps condition names at 50 characters too. Each arm of a gate gets its own
-/// condition under one policy, so every arm after the first takes a numbered suffix, and
-/// on a policy whose base name already sits at the cap that suffix must not lengthen it.
-#[test]
-fn suffixed_condition_names_respect_the_openfga_length_limit() {
-    let dsl = capped_gate_arms_translator()
-        .translate(&db_of(CAPPED_GATE_ARMS))
-        .expect("translation should plan")
-        .outputs()
-        .expect("the gate translates whole")
-        .model();
-
-    let conditions: Vec<&str> = dsl
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("condition "))
-        .map(|rest| rest.split_once('(').map_or(rest, |(name, _)| name).trim())
-        .collect();
-    assert_eq!(conditions.len(), 2, "one condition per arm:\n{dsl}");
-    assert_ne!(
-        conditions[0], conditions[1],
-        "two arms share a name:\n{dsl}"
-    );
-    for name in conditions {
-        assert!(
-            name.chars().count() <= 50,
-            "condition '{name}' is {} characters, over the 50 limit:\n{dsl}",
-            name.chars().count()
-        );
-    }
-}
-
 /// Two schemas holding a table of the same name must not collapse into one type.
 ///
 /// Collapsing them would let a policy on one answer for rows of the other, which is the
@@ -740,6 +708,11 @@ fn custom_well_known_types(setting: &str, replacement: &str) -> WellKnownTypes {
         } else {
             PG_ROLE_SCOPE_TYPE
         },
+        if setting == "request_gate" {
+            replacement
+        } else {
+            REQUEST_GATE_TYPE
+        },
         if setting == "nobody" {
             replacement
         } else {
@@ -774,6 +747,7 @@ fn invalid_configured_well_known_type_names_are_rejected_at_construction() {
             TEAM_TYPE,
             PG_ROLE_TYPE,
             PG_ROLE_SCOPE_TYPE,
+            REQUEST_GATE_TYPE,
             NOBODY_TYPE,
         );
         assert!(
@@ -790,6 +764,7 @@ fn duplicate_configured_well_known_type_names_are_rejected_at_construction() {
         "principal",
         PG_ROLE_TYPE,
         PG_ROLE_SCOPE_TYPE,
+        REQUEST_GATE_TYPE,
         NOBODY_TYPE,
     );
     assert!(matches!(
@@ -855,6 +830,7 @@ fn well_known_names_have_a_single_source_of_truth() {
         "principal_group",
         "database_role",
         "database_role_scope",
+        "request_check",
         "empty_principal",
     )
     .expect("custom type names should be valid");
@@ -905,7 +881,14 @@ fn well_known_names_have_a_single_source_of_truth() {
             "custom type name {expected} should reach every output:\n{rendered}"
         );
     }
-    for default in ["user", "team", "pg_role", "pg_role_scope", "nobody"] {
+    for default in [
+        "user",
+        "team",
+        "pg_role",
+        "pg_role_scope",
+        "request_gate",
+        "nobody",
+    ] {
         assert!(
             !rendered.contains(&format!("type {default}\n"))
                 && !rendered.contains(&format!("'{default}:")),
@@ -922,6 +905,7 @@ fn valid_extended_well_known_type_name_keeps_its_exact_spelling() {
         TEAM_TYPE,
         PG_ROLE_TYPE,
         PG_ROLE_SCOPE_TYPE,
+        REQUEST_GATE_TYPE,
         NOBODY_TYPE,
     )
     .expect("the extended identifier should be valid");

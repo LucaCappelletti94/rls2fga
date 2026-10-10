@@ -9,6 +9,8 @@ pub(crate) mod describe;
 pub(crate) mod ir;
 /// `OpenFGA` JSON authorization model structs and builder.
 pub mod json_model;
+/// The `validate.rules` bounds the written model must satisfy.
+pub mod model_bounds;
 /// `OpenFGA` DSL text model generation.
 pub mod model_generator;
 // `notes` carries its own `//!` docs, so no outer doc here.

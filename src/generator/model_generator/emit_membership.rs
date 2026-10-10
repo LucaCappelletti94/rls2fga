@@ -5,6 +5,7 @@
 
 use super::*;
 
+use crate::classifier::expansion::ExpansionState;
 use crate::classifier::recognizers::{resolve_membership_pairing, MembershipPairing};
 
 pub(super) struct MembershipSourceGate<'a> {
@@ -150,7 +151,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, TableReadability>,
 ) -> UsersetExpr {
     let UncorrelatedMembership {
         member_table,
@@ -181,7 +182,6 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     let gate = declare_temporal_condition(
         extra_predicates,
         member_table,
-        policy_name,
         table_plan,
         &ctx.settings.request_time_parameter,
         ctx.condition_parameters,
@@ -299,6 +299,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
                 computed: witness_member,
             },
             member_table,
+            extra_predicates,
             read_scope,
             ctx,
             table_plan,
@@ -361,6 +362,7 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
             computed: member_rel,
         },
         member_table,
+        extra_predicates,
         read_scope,
         ctx,
         table_plan,
@@ -369,40 +371,68 @@ pub(crate) fn emit_uncorrelated_membership<DB: DatabaseLike>(
     )
 }
 
-/// Intersects a membership arm with its table's read constraints.
+/// Intersects a membership arm with its table's read constraints, and with the request
+/// gates of every other table its residual reads.
+///
+/// The loader answers a residual once with every table in view. The classifier admits a
+/// residual over a table gated by the request only where that table, read empty, makes
+/// the residual false, so the grant rests on the gate exactly as the database's does.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the plan, the types, the notes and the context are four separate borrows"
+)]
 pub(super) fn apply_membership_read_scope<DB: DatabaseLike>(
     membership: UsersetExpr,
     join_table: &TableId,
-    scope: &JoinTableReadability,
+    residual: &ResidualPredicates,
+    scope: &TableReadability,
     ctx: &PatternCtx<'_, DB>,
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
 ) -> UsersetExpr {
-    let roles = match scope {
-        JoinTableReadability::Open => return membership,
-        JoinTableReadability::Unreadable => return deny_expr(table_plan),
-        JoinTableReadability::RequestGated { gates } => {
-            let mut expressions = Vec::with_capacity(gates.len() + 1);
-            expressions.push(membership);
-            // Request-only patterns never consult membership readability.
-            for gate in gates {
-                expressions.push(translate_pattern(
-                    &gate.pattern,
-                    &PatternCtx {
-                        policy_name: &gate.policy_name,
-                        ..*ctx
-                    },
-                    table_plan,
-                    all_types,
-                    notes,
-                    &mut BTreeMap::new(),
-                ));
-            }
-            return combine_intersection(expressions).unwrap_or_else(|| deny_expr(table_plan));
-        }
-        JoinTableReadability::Guarded { roles } => roles,
+    let mut gates: Vec<ReadGate> = if ctx.membership_reads_bypass_rls {
+        Vec::new()
+    } else {
+        residual
+            .relations()
+            .iter()
+            .filter(|relation| *relation != join_table)
+            .filter_map(|relation| {
+                match table_readability(relation, ctx.db, ctx.registry, &ExpansionState::new()) {
+                    TableReadability::RequestGated { gates } => Some(gates),
+                    _ => None,
+                }
+            })
+            .flatten()
+            .collect()
     };
+    let roles = match scope {
+        TableReadability::Open => &[][..],
+        TableReadability::Unreadable => return deny_expr(table_plan),
+        TableReadability::RequestGated { gates: own } => {
+            gates.extend(own.iter().cloned());
+            &[][..]
+        }
+        TableReadability::Guarded { roles } => roles.as_slice(),
+    };
+    let mut expressions = Vec::with_capacity(gates.len() + 1);
+    expressions.push(membership);
+    // Request-only patterns never consult membership readability.
+    for gate in &gates {
+        expressions.push(translate_pattern(
+            &gate.pattern,
+            &PatternCtx {
+                policy_name: &gate.policy_name,
+                ..*ctx
+            },
+            table_plan,
+            all_types,
+            notes,
+            &mut BTreeMap::new(),
+        ));
+    }
+    let membership = combine_intersection(expressions).unwrap_or_else(|| deny_expr(table_plan));
     if roles.is_empty() {
         return membership;
     }
@@ -421,7 +451,7 @@ pub(super) fn apply_membership_read_scope<DB: DatabaseLike>(
             scope_note: TranslationNote::MembershipReadScope {
                 policy: ctx.policy_name.to_string(),
                 join_table: join_table.clone(),
-                roles: roles.clone(),
+                roles: roles.to_vec(),
                 relation: scope_relation.clone(),
             },
             missing_object_what: "membership read scope tuples",
@@ -590,7 +620,7 @@ pub(crate) fn emit_exists_membership<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, TableReadability>,
 ) -> UsersetExpr {
     emit_membership(
         exists_membership,
@@ -609,7 +639,7 @@ fn emit_membership<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, TableReadability>,
     polarity: MembershipPolarity,
 ) -> UsersetExpr {
     let ExistsMembership {
@@ -624,7 +654,7 @@ fn emit_membership<DB: DatabaseLike>(
     let table_types = ctx.table_types;
     // The subquery reads `join_table` as the user, so its own RLS decides which
     // membership rows count.
-    let open_scope = JoinTableReadability::Open;
+    let open_scope = TableReadability::Open;
     let read_scope = if polarity == MembershipPolarity::Block {
         let readable = lookup_table_id(db, join_table).is_some_and(|table| {
             crate::generator::unrestricted::restricts_nothing_by_any_route(table, db)
@@ -658,7 +688,6 @@ fn emit_membership<DB: DatabaseLike>(
     let gate = declare_temporal_condition(
         extra_predicates,
         join_table,
-        policy_name,
         table_plan,
         &ctx.settings.request_time_parameter,
         ctx.condition_parameters,
@@ -842,7 +871,14 @@ fn emit_membership<DB: DatabaseLike>(
         }
     };
     apply_membership_read_scope(
-        membership, join_table, read_scope, ctx, table_plan, all_types, notes,
+        membership,
+        join_table,
+        extra_predicates,
+        read_scope,
+        ctx,
+        table_plan,
+        all_types,
+        notes,
     )
 }
 
@@ -852,7 +888,7 @@ pub(super) fn emit_blocked_set<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, TableReadability>,
 ) -> Option<UsersetExpr> {
     let mut sets = Vec::with_capacity(subtract.len());
     for membership in subtract {
@@ -885,7 +921,7 @@ pub(super) fn emit_membership_exclusion<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, TableReadability>,
 ) -> UsersetExpr {
     let Some(base) = &exclusion.base else {
         notes.push(TranslationNote::ExpressionRefused {
@@ -933,7 +969,7 @@ pub(crate) fn emit_parent_inheritance<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, TableReadability>,
 ) -> UsersetExpr {
     let ParentInheritance {
         parent_table,
@@ -1077,7 +1113,7 @@ pub(crate) fn emit_abac_and<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, TableReadability>,
 ) -> UsersetExpr {
     let AbacAnd {
         relationship_part,
@@ -1109,25 +1145,36 @@ pub(crate) fn emit_abac_and<DB: DatabaseLike>(
 }
 
 /// A union or intersection of the parts a composite clause combines.
+///
+/// The parts that read only the request fold into one gate in normal form, so reordered,
+/// repeated or subsumed arms reach one relation. The rest translate one by one.
 pub(crate) fn emit_composite<DB: DatabaseLike>(
     composite: &Composite,
     ctx: &PatternCtx<'_, DB>,
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, TableReadability>,
 ) -> UsersetExpr {
     let Composite { op, parts } = composite;
+    let mut request_only = Vec::new();
     let mut child_exprs = Vec::new();
     for part in parts {
-        child_exprs.push(translate_pattern(
-            &part.pattern,
-            ctx,
-            table_plan,
-            all_types,
-            notes,
-            readability,
-        ));
+        match RequestFormula::of(&part.pattern) {
+            Some(formula) => request_only.push(formula),
+            None => child_exprs.push(translate_pattern(
+                &part.pattern,
+                ctx,
+                table_plan,
+                all_types,
+                notes,
+                readability,
+            )),
+        }
+    }
+    if !request_only.is_empty() {
+        let gate = RequestFormula::join(*op, request_only);
+        child_exprs.push(emit_request_formula(&gate, ctx, table_plan, all_types));
     }
     match op {
         BoolOp::Or => combine_union(child_exprs).unwrap_or_else(|| deny_expr(table_plan)),

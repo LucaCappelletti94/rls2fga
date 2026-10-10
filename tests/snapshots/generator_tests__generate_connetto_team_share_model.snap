@@ -1,5 +1,6 @@
 ---
 source: tests/generator_tests.rs
+assertion_line: 27
 expression: outputs.model().trim()
 ---
 model
@@ -23,13 +24,13 @@ type nobody
 
 type team_members_share
   relations
-    define gate_items_p_d3ff2ba0: [user:* with when_team_members_share_items_p_f7fde765]
+    define gate_items_p_d3ff2ba0: [user:* with when_member_in_app_subjects_85f3f83a]
 
 type teams
   relations
     define team_members_share: [team_members_share]
     define gate_items_p_d3ff2ba0: gate_items_p_d3ff2ba0 from team_members_share
 
-condition when_team_members_share_items_p_f7fde765(app_subjects: list<string>, member: string) {
+condition when_member_in_app_subjects_85f3f83a(app_subjects: list<string>, member: string) {
   member in app_subjects
 }

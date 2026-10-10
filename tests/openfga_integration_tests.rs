@@ -2,7 +2,7 @@
 
 use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use rls2fga::generator::well_known::{
-    WellKnownTypes, NOBODY_TYPE, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE, TEAM_TYPE,
+    WellKnownTypes, NOBODY_TYPE, PG_ROLE_SCOPE_TYPE, PG_ROLE_TYPE, REQUEST_GATE_TYPE, TEAM_TYPE,
 };
 use rls2fga::translator::TranslatorBuilder;
 use rls2fga::types::ConfidenceLevel;
@@ -83,6 +83,7 @@ CREATE POLICY p ON timed_docs FOR SELECT USING ("in" > now());
         TEAM_TYPE,
         PG_ROLE_TYPE,
         PG_ROLE_SCOPE_TYPE,
+        REQUEST_GATE_TYPE,
         NOBODY_TYPE,
     )
     .expect("the extended type name should be valid");
@@ -105,26 +106,5 @@ CREATE POLICY p ON timed_docs FOR SELECT USING ("in" > now());
     assert!(conditions
         .values()
         .any(|condition| condition.parameters.contains_key("_in")));
-    support::openfga::write_authorization_model(&mut client, &store_id, &model).await;
-}
-
-/// `OpenFGA` refuses the whole model when one condition name passes 50 characters, so the
-/// suffixed second arm of a gate at the cap must still load.
-#[tokio::test]
-#[ignore = "requires Docker and OpenFGA container"]
-async fn openfga_accepts_suffixed_condition_names_at_the_length_cap() {
-    let container = support::containers::start_openfga().await;
-    let grpc_port = container.get_host_port_ipv4(8081).await.unwrap();
-    let mut client = support::openfga::connect(grpc_port).await;
-    let store_id = support::openfga::create_store(&mut client, "condition-name-cap-test").await;
-
-    let model = support::footgun::capped_gate_arms_translator()
-        .translate(&support::footgun::db_of(support::footgun::CAPPED_GATE_ARMS))
-        .expect("translation should plan")
-        .outputs()
-        .expect("the gate translates whole")
-        .json_model();
-    let conditions = model.conditions.as_ref().expect("conditions should exist");
-    assert_eq!(conditions.len(), 2, "one condition per arm");
     support::openfga::write_authorization_model(&mut client, &store_id, &model).await;
 }

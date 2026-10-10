@@ -3,10 +3,10 @@ use crate::no_std_prelude::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::fmt::Write;
 
+use crate::classifier::expansion::ExpansionState;
 use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
 use crate::classifier::patterns::*;
-use crate::classifier::policy_classifier::classify_expr;
-use crate::classifier::recognizers::{constant_bool_value, is_constantly_false};
+use crate::classifier::readability::{table_readability, ReadGate, TableReadability};
 use crate::generator::db_lookup::{
     column_is_nullable, column_kind, composite_primary_key_columns, resolve_row_identity,
     row_uniquely_keys, single_identity_column,
@@ -21,15 +21,15 @@ use crate::generator::well_known::{
     can_select_for_update_relation, can_select_relation, can_update_check_relation,
     can_update_relation, can_update_using_relation, can_update_without_reading_relation,
     can_upsert_relation, deny_relation, member_relation, owner_team_relation, owner_user_relation,
-    public_relation, scope_roles_relation, WellKnownTypes, REQUEST_TIME_PARAMETER,
-    STRING_PARAMETER_TYPE, TIMESTAMP_PARAMETER_TYPE,
+    public_relation, request_gate_link_relation, scope_roles_relation, WellKnownTypes,
+    REQUEST_TIME_PARAMETER, STRING_PARAMETER_TYPE, TIMESTAMP_PARAMETER_TYPE,
 };
 use crate::parser::function_analyzer::FunctionSemantic;
 use crate::parser::names::{
     attribute_gate_relation_name, canonical_fga_type_name, clamp_relation_name,
-    conditional_gate_relation_name, gate_condition_name, is_owner_like_column_name, lookup_table,
-    lookup_table_id, membership_read_scope_relation_name, parent_type_from_fk_column,
-    public_flag_relation_name, resolve_table_id, role_limited_relation_name, role_scope_name,
+    conditional_gate_relation_name, is_owner_like_column_name, lookup_table, lookup_table_id,
+    membership_read_scope_relation_name, parent_type_from_fk_column, public_flag_relation_name,
+    request_gate_relation_name, resolve_table_id, role_limited_relation_name, role_scope_name,
     row_presence_relation_name, stored_relation_name, table_id_has_column, table_identity,
     yielded_relation_name, MAX_RELATION_NAME_LEN, MAX_RELATION_RENAME_ATTEMPTS,
 };
@@ -55,6 +55,8 @@ mod emit_requests;
 mod emit_roles;
 /// Which statements `PostgreSQL` refuses to plan because the policies loop.
 mod recursion;
+/// A gate that reads only the request, reduced to one normal form.
+mod request_formula;
 /// Role-threshold resource-column inference and tuple-source population.
 mod role_threshold;
 /// Whole-plan passes that run once every table is translated.
@@ -80,13 +82,15 @@ use emit_ownership::{
 };
 use emit_requests::{
     conditional_gate_expr, declare_temporal_condition, emit_membership_in_caller_set,
-    emit_request_gate, RequestSide, RowParameterSource,
+    emit_request_formula, emit_request_gate, RequestSide,
 };
 use emit_roles::{
     emit_numeric_threshold, emit_role_name_in_list, register_pg_role_scope, OwnerScope,
     RoleScopeSpec,
 };
 use recursion::PolicyReadRecursion;
+pub(crate) use request_formula::GateAtom;
+use request_formula::RequestFormula;
 use role_threshold::{populate_role_threshold_sources, RoleThresholdTables};
 pub(crate) use simplify::relation_grants_nothing;
 use simplify::{
@@ -173,8 +177,32 @@ pub(crate) struct ConditionSpec {
     pub expression: String,
     /// Parameter name to its `OpenFGA` type, sorted so emission is stable.
     pub parameters: BTreeMap<String, ConditionParameter>,
-    /// The parameter each tuple supplies, and where its value comes from.
-    pub row_parameter: RowParameter,
+}
+
+impl ConditionSpec {
+    /// The name this condition is declared under, read off what it evaluates alone.
+    ///
+    /// `OpenFGA` refuses a model declaring more than 25 conditions, so two guards
+    /// evaluating one expression over one parameter list share one name wherever they
+    /// come from, and the count follows the distinct guards rather than the tables.
+    pub(crate) fn name(&self) -> ConditionName {
+        let mut key = self.expression.clone();
+        for (parameter, kind) in &self.parameters {
+            let (shape, element) = match kind {
+                ConditionParameter::Scalar(element) => ("scalar", element),
+                ConditionParameter::ListOf(element) => ("list", element),
+            };
+            for part in [parameter.as_str(), shape, element] {
+                key.push('\0');
+                key.push_str(part);
+            }
+        }
+        ConditionName::canonicalized(format!(
+            "when_{}_{}",
+            self.expression,
+            stable_hex_suffix(&key)
+        ))
+    }
 }
 
 /// A condition parameter's type.
@@ -184,34 +212,6 @@ pub(crate) enum ConditionParameter {
     Scalar(&'static str),
     /// A list of values of the named element type.
     ListOf(&'static str),
-}
-
-/// What a tuple puts in the context under the parameter the request cannot supply.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum RowParameter {
-    /// Read from this column of the row.
-    Column {
-        /// The condition parameter the value fills.
-        parameter: String,
-        /// The column the value comes from.
-        column: ColumnName,
-    },
-    /// A constant the policy named, so every row of the table carries the same one.
-    Literal {
-        /// The condition parameter the value fills.
-        parameter: String,
-        /// The constant.
-        value: String,
-    },
-}
-
-impl RowParameter {
-    /// The parameter this tuple side fills.
-    pub(crate) fn parameter(&self) -> &str {
-        match self {
-            Self::Column { parameter, .. } | Self::Literal { parameter, .. } => parameter,
-        }
-    }
 }
 
 /// Structural identity of a subject list, stable against `Debug` formatting.
@@ -271,9 +271,9 @@ pub(crate) struct TypePlan {
     pub table_tuple_sources: Vec<TupleSource>,
     /// Ownership column → its relation. Sharing one would union distinct principals.
     ownership_relations: BTreeMap<String, RelationName>,
-    /// Wildcard gate predicate key → its relation. A predicate's tuples satisfy only
-    /// its own relation, so two keys must never share a name even on hash collision.
-    wildcard_gate_relations: BTreeMap<String, RelationName>,
+    /// Gate key → its relation. A gate's tuples satisfy only its own relation, so two
+    /// keys must never share a name even on hash collision.
+    gate_relations: BTreeMap<String, RelationName>,
     membership_source_relations: BTreeMap<String, RelationName>,
     /// Conditions this type's own relation references name, keyed by condition name.
     /// They live here rather than threaded through translation so a condition stays
@@ -345,7 +345,7 @@ impl TypePlan {
             well_known: well_known.clone(),
             table_tuple_sources: Vec::new(),
             ownership_relations: BTreeMap::new(),
-            wildcard_gate_relations: BTreeMap::new(),
+            gate_relations: BTreeMap::new(),
             membership_source_relations: BTreeMap::new(),
             conditions: BTreeMap::new(),
             reads_only_its_own_rows: false,
@@ -410,13 +410,18 @@ impl TypePlan {
         relation
     }
 
-    /// Relation carrying one wildcard gate's subjects, keyed by the gate's predicate.
+    /// Relation carrying one gate's `subjects`, keyed by what the gate tests.
     ///
     /// A memo hit shares the relation. A miss never adopts a name any other
-    /// definition holds, whatever its subjects, or two predicates' tuple sets would
-    /// union under one gate.
-    fn wildcard_gate_relation(&mut self, memo_key: &str, base: impl Into<String>) -> RelationName {
-        if let Some(existing) = self.wildcard_gate_relations.get(memo_key) {
+    /// definition holds, whatever its subjects, or two gates' tuple sets would
+    /// union under one relation.
+    fn gate_relation(
+        &mut self,
+        memo_key: &str,
+        base: impl Into<String>,
+        subjects: Vec<DirectSubject>,
+    ) -> RelationName {
+        if let Some(existing) = self.gate_relations.get(memo_key) {
             return existing.clone();
         }
         let base = clamp_relation_name(base.into());
@@ -440,11 +445,10 @@ impl TypePlan {
                 .collect();
             relation = RelationName::canonicalized(format!("{head}{suffix}"));
         }
-        let wildcard = vec![DirectSubject::Wildcard(self.well_known.user.clone())];
         self.direct_relations
             .entry(relation.clone())
-            .or_insert(wildcard);
-        self.wildcard_gate_relations
+            .or_insert(subjects);
+        self.gate_relations
             .insert(memo_key.to_string(), relation.clone());
         relation
     }
@@ -652,6 +656,28 @@ pub enum PlanningError {
         first: String,
         /// Source configured second.
         second: String,
+    },
+    /// Two different conditions were named alike. A condition's name is read off its
+    /// expression and parameters, so only a hash collision reaches this.
+    #[error("two different conditions both take the name `{name}`")]
+    ConditionNameCollision {
+        /// The name both conditions took.
+        name: ConditionName,
+    },
+    /// The model to be written crosses a `validate.rules` bound in `openfga/api`,
+    /// which the `WriteAuthorizationModel` call would refuse.
+    #[error(
+        "the model crosses the OpenFGA {bound:?} bound at `{item}`: {measured} against {limit}"
+    )]
+    ModelBoundExceeded {
+        /// The bound the model crosses.
+        bound: crate::generator::model_bounds::ModelBound,
+        /// The measured count or length.
+        measured: usize,
+        /// The limit the measurement may not cross.
+        limit: usize,
+        /// The item that crosses it, the name the bound applies to.
+        item: String,
     },
 }
 
@@ -919,7 +945,7 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     // Read terms refuse related-table RLS through classification, membership readability, and the caller-side check.
     let recursion = catalog_policies.then(|| PolicyReadRecursion::detect(db, &table_types));
     // Answered once per membership table rather than once per clause naming it.
-    let mut readability: BTreeMap<TableId, JoinTableReadability> = BTreeMap::new();
+    let mut readability: BTreeMap<TableId, TableReadability> = BTreeMap::new();
     let readability = &mut readability;
 
     let inheritance_children = inheritance_children(db);
@@ -1144,15 +1170,19 @@ pub(crate) fn build_plan_typing<DB: DatabaseLike>(
     }
 
     let types = ordered_types(all_types, &settings.well_known.user);
-    let conditions = surviving_conditions(&types);
+    let conditions = surviving_conditions(&types)?;
 
-    Ok(SchemaPlan {
+    let plan = SchemaPlan {
         types,
         notes,
         confidence_summary,
         conditions,
         well_known: settings.well_known.clone(),
-    })
+    };
+    crate::generator::model_bounds::check(&crate::generator::json_model::json_model_from_plan(
+        &plan,
+    ))?;
+    Ok(plan)
 }
 
 /// One table's build in progress.
@@ -1170,7 +1200,7 @@ struct TableBuild<'a, DB: DatabaseLike> {
     /// Everything the translation has to say.
     notes: &'a mut Vec<TranslationNote>,
     /// Which membership tables a caller can read, answered once each.
-    readability: &'a mut BTreeMap<TableId, JoinTableReadability>,
+    readability: &'a mut BTreeMap<TableId, TableReadability>,
     /// Per-clause grades, for the report.
     confidence_summary: &'a mut Vec<(String, ConfidenceLevel)>,
     /// The schema.
@@ -1729,6 +1759,13 @@ fn note_request_contracts(
                     separator.clone(),
                 ));
             }
+            TupleSource::RequestGateEntry { atom, .. } => {
+                contracts.insert((
+                    atom.request_parameter.to_string(),
+                    Some(atom.setting_key.clone()),
+                    atom.separator.clone(),
+                ));
+            }
             TupleSource::CallerSetShareGate {
                 request_parameter,
                 setting_key,
@@ -1785,8 +1822,12 @@ fn ordered_types(
 
 /// Only the conditions a surviving reference still names.
 ///
-/// A policy dropped by confidence filtering cannot leave a condition behind.
-fn surviving_conditions(types: &[TypePlan]) -> BTreeMap<ConditionName, ConditionSpec> {
+/// A policy dropped by confidence filtering cannot leave a condition behind. Two type
+/// plans declare one condition under one name, since the name is read off the content,
+/// and two different conditions reaching one name is refused rather than merged.
+fn surviving_conditions(
+    types: &[TypePlan],
+) -> Result<BTreeMap<ConditionName, ConditionSpec>, PlanningError> {
     let named: BTreeSet<&ConditionName> = types
         .iter()
         .flat_map(|plan| plan.direct_relations.values())
@@ -1797,12 +1838,23 @@ fn surviving_conditions(types: &[TypePlan]) -> BTreeMap<ConditionName, Condition
             DirectSubject::Type(_) | DirectSubject::Wildcard(_) => None,
         })
         .collect();
-    types
+    let mut conditions = BTreeMap::new();
+    for (name, spec) in types
         .iter()
         .flat_map(|plan| plan.conditions.iter())
         .filter(|(name, _)| named.contains(name))
-        .map(|(name, spec)| (name.clone(), spec.clone()))
-        .collect()
+    {
+        match conditions.get(name) {
+            Some(held) if held != spec => {
+                return Err(PlanningError::ConditionNameCollision { name: name.clone() })
+            }
+            Some(_) => {}
+            None => {
+                conditions.insert(name.clone(), spec.clone());
+            }
+        }
+    }
+    Ok(conditions)
 }
 
 fn source_carries_condition(source: &TupleSource) -> bool {
@@ -1810,6 +1862,7 @@ fn source_carries_condition(source: &TupleSource) -> bool {
         source,
         TupleSource::ConditionalAttributeGate { .. }
             | TupleSource::SessionAttributeGate { .. }
+            | TupleSource::RequestGateEntry { .. }
             | TupleSource::CallerSetShareGate { .. }
             | TupleSource::ExistsMembership { gate: Some(_), .. }
             | TupleSource::HolderMembers { gate: Some(_), .. }
@@ -2024,161 +2077,44 @@ fn types_bearing_name<DB: DatabaseLike>(
         .collect()
 }
 
-/// How much of a membership table a querying user may read.
-enum JoinTableReadability {
-    Open,
-    RequestGated { gates: Vec<MembershipReadGate> },
-    Guarded { roles: Vec<String> },
-    Unreadable,
-}
-
-struct MembershipReadGate {
-    policy_name: String,
-    pattern: PatternClass,
-}
-
 /// Readability of one membership table, computed once per plan per table.
 fn join_table_readability<'a, DB: DatabaseLike>(
     join_table: &TableId,
     db: &DB,
     registry: &FunctionRegistry,
-    memo: &'a mut BTreeMap<TableId, JoinTableReadability>,
-) -> &'a JoinTableReadability {
+    memo: &'a mut BTreeMap<TableId, TableReadability>,
+) -> &'a TableReadability {
     memo.entry(join_table.clone())
-        .or_insert_with(|| read_join_table_readability(join_table, db, registry))
+        .or_insert_with(|| table_readability(join_table, db, registry, &ExpansionState::new()))
 }
 
 /// Returns the membership read constraints, or `None` when no row is visible.
 fn noted_membership_read_scope<'a, DB: DatabaseLike>(
     join_table: &TableId,
     ctx: &PatternCtx<'_, DB>,
-    memo: &'a mut BTreeMap<TableId, JoinTableReadability>,
+    memo: &'a mut BTreeMap<TableId, TableReadability>,
     notes: &mut Vec<TranslationNote>,
-) -> Option<&'a JoinTableReadability> {
+) -> Option<&'a TableReadability> {
     if ctx.membership_reads_bypass_rls {
-        return Some(&JoinTableReadability::Open);
+        return Some(&TableReadability::Open);
     }
     let scope = join_table_readability(join_table, ctx.db, ctx.registry, memo);
     match scope {
-        JoinTableReadability::Unreadable => {
+        TableReadability::Unreadable => {
             notes.push(TranslationNote::MembershipTableGrantsNoReads {
                 policy: ctx.policy_name.to_string(),
                 join_table: join_table.clone(),
             });
             None
         }
-        JoinTableReadability::Guarded { .. } => {
+        TableReadability::Guarded { .. } => {
             notes.push(TranslationNote::MembershipTableGuarded {
                 policy: ctx.policy_name.to_string(),
                 join_table: join_table.clone(),
             });
             Some(scope)
         }
-        JoinTableReadability::Open | JoinTableReadability::RequestGated { .. } => Some(scope),
-    }
-}
-
-/// Only these patterns can be moved without reading a membership row.
-fn is_request_only_gate(pattern: &PatternClass) -> bool {
-    match pattern {
-        PatternClass::P10ConstantBool(_)
-        | PatternClass::P16ConstantInCallerSet(_)
-        | PatternClass::P17CallerScalarEqualsConstant(_) => true,
-        PatternClass::P8Composite(composite) => composite
-            .parts
-            .iter()
-            .all(|part| is_request_only_gate(&part.pattern)),
-        PatternClass::ExpandedFunction(expanded) => {
-            expanded.presence_columns.is_empty() && is_request_only_gate(&expanded.inner.pattern)
-        }
-        _ => false,
-    }
-}
-
-fn read_join_table_readability<DB: DatabaseLike>(
-    join_table: &TableId,
-    db: &DB,
-    registry: &FunctionRegistry,
-) -> JoinTableReadability {
-    let Some(table) = lookup_table_id(db, join_table) else {
-        return JoinTableReadability::Open;
-    };
-    let rls = table.has_row_level_security(db);
-    if rls == Ok(false) {
-        return JoinTableReadability::Open;
-    }
-
-    let mut roles = BTreeSet::new();
-    let mut grants_read = false;
-    let mut grants_read_unscoped = false;
-    let mut row_independent = rls == Ok(true);
-    let mut gates = Vec::new();
-    for policy in table.policies(db).into_iter().flatten() {
-        if !policy_covers_reads(policy) {
-            continue;
-        }
-        let Some(using) = policy.using_expression(db) else {
-            row_independent = false;
-            continue;
-        };
-        let admits_nothing = is_constantly_false(using);
-
-        if derive_policy_mode(policy) == PolicyMode::Restrictive {
-            if admits_nothing && policy.applies_to_public() {
-                return JoinTableReadability::Unreadable;
-            }
-            if !policy.applies_to_public() {
-                row_independent = false;
-            } else if row_independent && constant_bool_value(using) != Some(true) {
-                let pattern = classify_expr(
-                    using,
-                    db,
-                    registry,
-                    &qualified_table_name(table),
-                    PolicyCommand::Select,
-                )
-                .pattern;
-                if is_request_only_gate(&pattern) {
-                    gates.push(MembershipReadGate {
-                        policy_name: format!("{join_table}_{}", policy.name()),
-                        pattern,
-                    });
-                } else {
-                    row_independent = false;
-                }
-            }
-            continue;
-        }
-        row_independent &= policy.applies_to_public() && constant_bool_value(using) == Some(true);
-        if admits_nothing {
-            continue;
-        }
-
-        grants_read = true;
-        let scoped = derive_scoped_roles(policy, db);
-        if scoped.is_empty() {
-            grants_read_unscoped = true;
-        } else {
-            roles.extend(scoped);
-        }
-    }
-
-    if !grants_read {
-        JoinTableReadability::Unreadable
-    } else if row_independent {
-        if gates.is_empty() {
-            JoinTableReadability::Open
-        } else {
-            JoinTableReadability::RequestGated { gates }
-        }
-    } else {
-        JoinTableReadability::Guarded {
-            roles: if grants_read_unscoped {
-                Vec::new()
-            } else {
-                roles.into_iter().collect()
-            },
-        }
+        TableReadability::Open | TableReadability::RequestGated { .. } => Some(scope),
     }
 }
 
@@ -2526,7 +2462,7 @@ fn translate_pattern<DB: DatabaseLike>(
     table_plan: &mut TypePlan,
     all_types: &mut BTreeMap<TypeName, TypePlan>,
     notes: &mut Vec<TranslationNote>,
-    readability: &mut BTreeMap<TableId, JoinTableReadability>,
+    readability: &mut BTreeMap<TableId, TableReadability>,
 ) -> UsersetExpr {
     let source_table = ctx.source_table;
     match pattern {
@@ -2676,7 +2612,7 @@ fn translate_pattern<DB: DatabaseLike>(
                 comparison: RequestComparison::CallerSetHolds,
                 separator: separator.as_deref(),
             },
-            RowParameterSource::Column(column),
+            column,
             ctx,
             table_plan,
         ),
@@ -2689,36 +2625,21 @@ fn translate_pattern<DB: DatabaseLike>(
                 comparison: RequestComparison::CallerValueEquals,
                 separator: None,
             },
-            RowParameterSource::Column(column),
+            column,
             ctx,
             table_plan,
         ),
-        PatternClass::P16ConstantInCallerSet(ConstantInCallerSet {
-            value,
-            source,
-            separator,
-        }) => emit_request_gate(
-            RequestSide {
-                source,
-                comparison: RequestComparison::CallerSetHolds,
-                separator: separator.as_deref(),
-            },
-            RowParameterSource::Constant(value),
+        PatternClass::P16ConstantInCallerSet(test) => emit_request_formula(
+            &RequestFormula::Atom(GateAtom::held_by_caller_set(test)),
             ctx,
             table_plan,
+            all_types,
         ),
-        PatternClass::P17CallerScalarEqualsConstant(CallerScalarEqualsConstant {
-            value,
-            source,
-        }) => emit_request_gate(
-            RequestSide {
-                source,
-                comparison: RequestComparison::CallerValueEquals,
-                separator: None,
-            },
-            RowParameterSource::Constant(value),
+        PatternClass::P17CallerScalarEqualsConstant(test) => emit_request_formula(
+            &RequestFormula::Atom(GateAtom::equal_to_caller_value(test)),
             ctx,
             table_plan,
+            all_types,
         ),
         PatternClass::Unknown(unclassified) => {
             emit_unclassified(unclassified, ctx, table_plan, notes)

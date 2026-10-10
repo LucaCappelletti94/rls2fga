@@ -104,6 +104,8 @@ Every query projects `object`, `relation` and `subject`. One whose `TupleQuery::
 
 Running the SQL and writing the tuples are yours: the crate keeps no database handle. The model is the exception, `client::write_authorization_model` writes it to a running server over a client you built.
 
+A model `OpenFGA` would refuse to store is a translation error. `translate` returns `PlanningError::ModelBoundExceeded`, naming the bound, the item and both numbers, for every bound the `openfga/api` protobuf declares, such as 25 conditions, 512-byte condition expressions and 50-character names. Limits the server sets in its own configuration cannot be known here, so `Outputs::type_count` and, with `client`, `Outputs::model_size_in_bytes` report what to compare against `maxTypesPerAuthorizationModel` (100 by default) and `maxAuthorizationModelSizeInBytes` (256 KiB).
+
 ## Cargo features
 
 `std` is on by default and carries the file output surface (`Outputs::write`). Without it the crate builds on `no_std` plus `alloc`, verified against `thumbv7em-none-eabi`, with the whole pipeline intact. `client` adds the model writer and implies `std`.
@@ -129,13 +131,19 @@ A report names a pattern by its number, so `P4 (EXISTS members)` beside a TODO p
 | P13 | `UncorrelatedMembership` | `EXISTS (SELECT 1 FROM staff WHERE user_id = current_user)` | One holder object with source-specific membership relations |
 | P14 | `RowValueInCallerSet` | `owner = ANY(string_to_array(current_setting('app.subjects', true), ','))` | A gate asking whether the caller's list holds the row's value |
 | P15 | `RowValueEqualsCallerScalar` | `tenant_id = current_setting('app.tenant_id')::uuid` | The same gate, equality against the caller's value |
-| P16 | `ConstantInCallerSet` | `'admin' = ANY(string_to_array(current_setting('app.roles', true), ','))` | The same gate, no column takes part |
-| P17 | `CallerScalarEqualsConstant` | `(SELECT auth.jwt() ->> 'aal') = 'aal2'` | The same gate, caller's value against a constant |
+| P16 | `ConstantInCallerSet` | `'admin' = ANY(string_to_array(current_setting('app.roles', true), ','))` | A test of the caller's list, held once per table, see below |
+| P17 | `CallerScalarEqualsConstant` | `(SELECT auth.jwt() ->> 'aal') = 'aal2'` | A test of the caller's value, held once per table, see below |
 | P18 | `MembershipInCallerSet` | `EXISTS (SELECT 1 FROM shares s WHERE s.parent_id = t.id AND s.viewer = ANY(...))` | The gate on each share row, reached through the same parent P4 bridges to |
 | - | `MembershipExclusion` | Positive grant `AND NOT EXISTS (...)`, caller `NOT IN (...)`, caller `<> ALL (...)` | Grant `but not blocked`, with independent relations per blocklist |
 | - | `Unknown` | Anything else | Denied, with a TODO, unless an oracle classifies it |
 
 Blocklist subqueries must be correlated caller-identity memberships over tables with no own or inherited row-level security. `NOT IN` and `<> ALL` require a provably non-null projected column. A negative-only `RESTRICTIVE` clause subtracts from the action's existing grants, while standalone permissive negation and caller-set blocklists are refused.
+
+## Gates that read only the request
+
+A clause built from P16, P17 and constants has the same answer for every row, so it is stated once per table. It is first reduced to a normal form, which flattens nested `AND` and `OR`, drops repeated or subsumed arms and folds constants, so two spellings of one gate become one relation. Each constant it tests is one tuple on the `request_gate` object named after the table (`request_gate:docs`), and the `AND` and `OR` between them are written in the model. Each row carries one `request_gate` link to that object, however many gates the table has.
+
+Every test of one kind shares one condition (`required_value in app_bot_list`), so the model declares one condition per distinct guard rather than per table or policy. `OpenFGA` limits each condition evaluation by cost (`maxConditionEvaluationCost`, 100 by default), which on `OpenFGA` 1.11 stops a test at a list of about 90 fifteen-character entries. Testing several constants in one expression would divide that limit between them, which is why each constant gets its own tuple. The relation report states such a gate as `RowDecision::Request`, which the check context decides without any record.
 
 ## What the crate refuses
 
@@ -148,6 +156,8 @@ Two refusals are deliberate. Reading the body of a `SECURITY DEFINER` function w
 Naming a row to change means reading it, so `can_update` and `can_delete` intersect `can_select`, while an `UPDATE` naming no row is `can_update_without_reading`. Plain `INSERT` reads nothing, but `RETURNING` a column and naming an `ON CONFLICT` target both read the new row back, which is `can_insert_returning`, and `INSERT ... ON CONFLICT DO UPDATE` is `can_upsert`. A locking read (`FOR UPDATE` and friends) also applies the `UPDATE` policies, so check `can_select_for_update` rather than `can_select`. A policy expression reads every table it names, so an inherited parent rule intersects the parent's `can_select` and a membership table granting no reads denies outright.
 
 Membership tables whose permissive read policies all use `USING (true)` and apply to `PUBLIC` need no caveat when their restrictive read policies are absent or constant `true`. Supported restrictive gates using only literals and declared session attributes are `AND`ed onto the membership arm and require those attributes in each check context. Row-dependent or role-scoped membership rules retain `MembershipTableGuarded`.
+
+A residual such as `s.weight > (SELECT avg(weight) FROM paper_shares)` may read a table gated that way too. When the gate holds the caller sees what the loader saw, and when it fails the table reads empty, so the residual is accepted only where an empty table makes it false (`avg` of nothing is `NULL`, `count` of nothing fails `> 0`), and the grant is `AND`ed with the gate. `count(*) = 0` and `NOT EXISTS` stay refused.
 
 Membership tuple relations are isolated by table, correlation, user column, predicates and condition inputs. Parent and share-row bridges are isolated by the columns they traverse.
 

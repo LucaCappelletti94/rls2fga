@@ -1492,22 +1492,35 @@ fn ensure_direct_yields_a_fresh_name_when_the_subjects_differ() {
     );
 }
 
-/// The memo, not the name, carries injectivity: a 32-bit suffix can collide, and a
-/// colliding wildcard would merge two predicates' tuple sets under one gate.
+fn user_wildcard() -> Vec<DirectSubject> {
+    vec![DirectSubject::Wildcard(TypeName::canonicalized(USER_TYPE))]
+}
+
+/// The memo, not the name, carries injectivity: a 32-bit suffix can collide, and two gates
+/// with the same subjects would then merge their tuple sets under one relation.
 #[test]
-fn wildcard_gate_relations_never_share_across_keys_even_when_the_base_collides() {
+fn gate_relations_never_share_across_keys_even_when_the_base_collides() {
     let mut plan = TypePlan::new(TypeName::canonicalized("docs"));
-    let first =
-        plan.wildcard_gate_relation("attr:6:status:Eq:t9:published", "public_where_status_cafe");
-    let second =
-        plan.wildcard_gate_relation("attr:6:status:Eq:t5:draft", "public_where_status_cafe");
+    let first = plan.gate_relation(
+        "attr:6:status:Eq:t9:published",
+        "public_where_status_cafe",
+        user_wildcard(),
+    );
+    let second = plan.gate_relation(
+        "attr:6:status:Eq:t5:draft",
+        "public_where_status_cafe",
+        user_wildcard(),
+    );
     assert_ne!(
         first, second,
-        "distinct predicate keys sharing a base name must not share a relation"
+        "distinct gate keys sharing a base name must not share a relation"
     );
-    let repeat =
-        plan.wildcard_gate_relation("attr:6:status:Eq:t9:published", "public_where_status_cafe");
-    assert_eq!(first, repeat, "one predicate key, one relation");
+    let repeat = plan.gate_relation(
+        "attr:6:status:Eq:t9:published",
+        "public_where_status_cafe",
+        user_wildcard(),
+    );
+    assert_eq!(first, repeat, "one gate key, one relation");
     assert!(
         plan.direct_relations.contains_key(&first) && plan.direct_relations.contains_key(&second),
         "both gates are declared as direct wildcard relations"
@@ -1517,25 +1530,23 @@ fn wildcard_gate_relations_never_share_across_keys_even_when_the_base_collides()
 /// Whatever the collision count, the minted gate is a fresh wildcard relation, and the
 /// counter survives the length clamp instead of being truncated into a collision.
 #[test]
-fn a_wildcard_gate_never_adopts_an_occupied_name_however_many_collide() {
+fn a_gate_never_adopts_an_occupied_name_however_many_collide() {
     let mut plan = TypePlan::new(TypeName::canonicalized("docs"));
     let foreign = vec![DirectSubject::Type(TypeName::canonicalized("user"))];
     plan.ensure_direct("gate_base", foreign.clone());
     for counter in 1..=4 {
         plan.ensure_direct(format!("gate_base_{counter}"), foreign.clone());
     }
-    let minted = plan.wildcard_gate_relation("key:a", "gate_base");
+    let minted = plan.gate_relation("key:a", "gate_base", user_wildcard());
     assert_eq!(
         plan.direct_relations.get(&minted),
-        Some(&vec![DirectSubject::Wildcard(TypeName::canonicalized(
-            USER_TYPE
-        ))]),
-        "the minted gate holds its own wildcard subjects, never a foreign definition"
+        Some(&user_wildcard()),
+        "the minted gate holds its own subjects, never a foreign definition"
     );
 
     let long = "g".repeat(MAX_RELATION_NAME_LEN);
-    let first = plan.wildcard_gate_relation("key:b", long.clone());
-    let second = plan.wildcard_gate_relation("key:c", long);
+    let first = plan.gate_relation("key:b", long.clone(), user_wildcard());
+    let second = plan.gate_relation("key:c", long, user_wildcard());
     assert_ne!(first, second, "a full-length base still yields per key");
     assert!(second.as_str().len() <= MAX_RELATION_NAME_LEN);
     assert!(
