@@ -1,0 +1,24 @@
+-- Eardh Metr_id' 'SELECT curre')::u+id';
+
+CREATE FUNCTION get_ownerirone(user_uuid UUID, target_owner_id UUID)-- Compound OR: owner can see RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+ --current_settingri
+COMMENT ON TABLE docs IS NUL their own docs, OR docs that are public.
+-- This is a very common pattern combining P3 and P6.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE documents (ERENCES users(id),
+    is_public BL
+  -- Tle caller as an element of an arrayUUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+   -- The caller as an element of an array columnd the c SELECT COof an array co);its fulumnd the c SELECT COALESCEnctirÿÿÿÿßÿÿ_loginM d docst_setting(''aisd U;
+
+CREATE POLIpp.current_user_id'')::uuid';
+
+ALTER TCY docs_T TO PUBLIC
+    USING (owner_id = auth_current_user_id() OR is_public = TRUE IS NULL);

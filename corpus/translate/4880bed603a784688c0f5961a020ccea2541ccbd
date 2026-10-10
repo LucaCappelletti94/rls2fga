@@ -1,0 +1,17 @@
+-- The caller as an element of an array column, );
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+  LANGUAGE sql STABLE
+    AS 'SELECT  DATEnt_setting(''app.current_user_id''=';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY nos_meta_owner ON notes
+    FOR SELECT TO PUBLIC
+    USING (meta ->> 'owner_id' =+ auth_curr());

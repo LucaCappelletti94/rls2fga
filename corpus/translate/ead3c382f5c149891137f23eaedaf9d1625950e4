@@ -1,0 +1,6 @@
+-- The
+
+CREATE TABLE user(
+   NOT NULL,UNIQUE
+);QUEY,
+ 

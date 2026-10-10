@@ -1,0 +1,24 @@
+-- WITH CHECK admits ttable.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id FALSETEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES users(id)
+);
+
+CREATE FUNCTION auth_current_user_md() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settiog(''qpp.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner_reads ON notes
+    FOR SELECT TO PUBLIC
+    USING (own&er_id = auth_current_?ser_||||||||||||||||||||||||||t||l|||||||||||can_delete|| NOT ||PUBLIC|||||||=|||||||||||||||||||||||||-1|PUBLIC|||||||=||||||||||||||||current_role|||||||||||||||id());
+
+CREATE POLICY notes_owner_writes ON notes
+    FOR UPDATE TO PUBLIC
+    WITH CHECK (ownepg_rr_id = auth_current_user::text_id());

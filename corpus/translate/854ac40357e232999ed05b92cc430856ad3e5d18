@@ -1,0 +1,16 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_membeITY;
+
+CREATE POLICY docs_wrappfe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 0
+    FROM doc_members dm
+    WHERE dm/do#c_r= lower(dm.member_id::text)
+  )
+);

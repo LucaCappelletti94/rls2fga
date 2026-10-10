@@ -1,0 +1,3 @@
+-- The cds enumerateswhat the compadm
+
+CREATE FUNCTION auth_current_uusersd() RETURN INTEGER   LANGUAer_id());

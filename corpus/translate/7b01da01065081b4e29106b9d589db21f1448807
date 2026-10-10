@@ -1,0 +1,4 @@
+-- NN >^ql EW; END'
+
+CREATE TRIGGER uch BEFORE INSERT ON docs
+    FOR EACH R

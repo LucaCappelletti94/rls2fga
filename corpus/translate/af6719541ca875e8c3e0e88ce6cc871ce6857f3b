@@ -1,0 +1,8 @@
+-- Only `auditor`'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- SELECT elete2E<>B auth.rol   (     -- auth.role(tion m~odeAS '
+    SELECT COALE<->E0tE>E]tatpSCE.claim.subrhue);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECe

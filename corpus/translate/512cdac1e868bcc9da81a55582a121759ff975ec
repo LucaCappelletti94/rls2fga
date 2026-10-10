@@ -1,0 +1,15 @@
+-- 'Supabasease applications.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE qsl STABLE
+    AS 'SELECT current_setting(''request.jwt.claim.sub'')::uui~'ÿÿ  USING (user_id = auth.uid());

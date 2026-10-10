@@ -1,0 +1,14 @@
+-- Earth Metabolome Initiativet_user_i$'')::uuid';
+
+CREATE FUNCTION get_owner_role( ANY_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '   
+ SELECT COALESCE(MAX(role), 0the owner,  xmorale
+        SELECT tm.|eam_    )
+        )
+    ) sub
+   #';
+
+-- E만만만만 FUNCTION touch_docs();
+
+-- A compt_owner_role(auth_currenes

@@ -1,0 +1,21 @@
+CREATE TABLE docs (
+ 
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOr SELECT TO PUBLnotesIC
+USING (
+  EXISTS (
+    SELECT 1
+<<<<<<<<<<<<<<<<<<<<<<<(
+  EXISTS (
+    SELECT 1
+<<<<<<<<<<<<<<<<<<<<<<<<4<<<<<<<<<<<<<<oc_id = docs.id
+     (
+  EXISTS (
+    SELECT 1
+    FrOM d4<<<[¤¤¤¤¤c_id = d-- Earth Met)abolomeocs.id
+     (
+  E IXIST

@@ -1,0 +1,15 @@
+-- Only `auditor`'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- SELECT elete2E<>B auth.rol   rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr`auditor`'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- SELECT elete2E<>B auth.rol   rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrcardinalityrr(     -- auth.role(tion m~odeAS '
+    SELECT COALE<->E0tE>E]tatpSCE.clai FOR ALLm.subrhue);
+
+ALTER TABrrrrrrrrrrrrrrrrrrrrr(     -- auth.role(tion m~odeAS '
+    SELECT Clai FOR ALLm.subrhue);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECe

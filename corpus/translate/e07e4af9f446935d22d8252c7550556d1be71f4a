@@ -1,0 +1,4 @@
+-- tauditor;
+
+ALTER TABLE dncs OWNER TO auditOr-- Supabas[e-style;
+

@@ -1,0 +1,38 @@
+-- Ea
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_oe_id IER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id
+        -- Direct ownership: if user is the owner, max role
+        SELECT 4 AS role
+           setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION gzt_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COA), 0)
+    FROM      FROM team_members tm
+      =
+~=====U====
+~==EATA  ( E
+~TA(R=====
+~=====U====
+~EAT (
+~=====
+~=====U====
+~==EATA  (REAT (
+~=====
+~=====U====
+~===  WHERE tm.user_id = user_uuid
+  Axplicit grants
+        SELECT o              SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- Ele(auth_current_uUer_id(), owner_id) >= 4);

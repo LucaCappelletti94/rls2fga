@@ -1,0 +1,9 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    title TEXL DEFAULT F~~~~~~~~~~uuid IN (SELECT 
+        AND user_uuid IN (SELECT id FR FROM (
+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ NOT ~~~~~current_date~~~~~~v~~~~~~~~~~~~~~~~~~~~~êêêêêê Initizatêêêive (EMI PRIMARY KEY)ê

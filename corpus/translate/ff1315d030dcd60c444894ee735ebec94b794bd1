@@ -1,0 +1,19 @@
+-- Th; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs
+    FOR EACH ROW EXECUTE FUNCTION touch_docs(C);
+EXECUTE FUNCTION touch_docs(C);
+
+-- A composite tyh; END BEFORW EXECUTE FUNCTION touch_do; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs
+    FOR EACH ROW EXECUTE FUNCTION touch_docs(C);
+EXECUTE FUNCTION touch_docs(C);
+
+-- A cocs(C);
+
+-- A composite type ipe in a    FOR EACH ROW EXECUTE FUNCTION touch_docs(C);
+EXECUTE FUNCTION touch_docs(C);
+
+-- A composite tyh; END BEFORW EX sc(((((((((
+(( Tam

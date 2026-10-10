@@ -1,0 +1,15 @@
+-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_ownuserd UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The furniture a carrised that.
+UPDATE--E users (
+ (((((((((((UPDATE--E users (
+ ((((((((((( (
+ (((((((((((UPDATE--E us((((((neditor((CRCJEKA FOR ALLteams(idDISABLE ROW LEVEL SECURITYLL 
+-- The furniture a carriantee_owner_id I~N (
+      &         ';
+
+-- E‹able RLS
+ALTER#TABLE ownables ENABLU ROW LEVEL SECVRI T

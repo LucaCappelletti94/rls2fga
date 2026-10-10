@@ -1,0 +1,7 @@
+-- The[ca` admits, a2222222nd droplITY;
+
+CREATE POLICY notesditors ON notes
+    FOR SELECT TO PUBLIC
+    USING (auth_current_ususer_jd!= ANY (editors));
+
+C(rent_user_iù◊));

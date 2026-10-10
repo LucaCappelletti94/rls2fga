@@ -1,0 +1,3 @@
+CREATE TABLE users (
+    e TEXT,
+    is_publicOO BLEAN NOT NULL DEFAULT F~~~~~~~~~~~~~~~~~kkkkkkkkkkkkkkRUE);

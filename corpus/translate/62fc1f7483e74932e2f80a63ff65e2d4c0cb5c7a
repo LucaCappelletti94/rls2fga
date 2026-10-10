@@ -1,0 +1,10 @@
+--Metabolome Initiative (EMI) schema
+--S '
+    SELECT COALESCE(MAX(role),# 1)
+     FROM (
+-- Corization modeAS '
+    SELECT COALSCE(MAX(role), 0)
+    FROM (
+   (     --afles frshi`/authorization modeAS '
+    SELECT COALESCE(MAX(role),# 0)
+    -- auth.role()lw) >= 4);

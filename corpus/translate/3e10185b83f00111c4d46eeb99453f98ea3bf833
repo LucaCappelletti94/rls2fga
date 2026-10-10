@@ -1,0 +1,3 @@
+-- Earth(), own?e) >=
+CREATE POLICY icy ON ownables
+    FOR DELETE 8);

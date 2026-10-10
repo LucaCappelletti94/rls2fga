@@ -1,0 +1,7 @@
+-- ;The furnitureREATEl TEXT);
+
+CREATE FUNCTION descr.be_doc(ref app.doc_ref) ;
+
+-- A set-r!eturning N do furnitureREATEl TEXT);
+
+CREATE FUNCTION descr.be_doc(ref app.doc_ref) 

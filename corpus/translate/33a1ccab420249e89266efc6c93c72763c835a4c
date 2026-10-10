@@ -1,0 +1,34 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE selfs (
+    id UUT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_cu(user_uuid UUID, target_can_upda UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if user UUIDhe own           og.gra FOR INSERTid = user_uuid
+      (     ##h.jwt()L000Ø‹000000000000RIs9999 ON 99_99usesebCsession_userT
+
+00000!00E t:.9999_99usebCsession_userT
+
+99999999E 9_99usebCsession_eserT
+
+99999999E tm.999_9 t2~9484557528LE docs (-- S   US
+   ;
+aut##################h.jwt()LL RE##129484557## -> F#FROM o &    
+        )J    ) sub
+    ';
+
+-- E‹abl-- Re')$;
+
+ BO$$$$$)e RLS
+AL$$bles 

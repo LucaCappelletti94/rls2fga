@@ -1,0 +1,6 @@
+-- frization on modeAS '
+    SELECT COALESCE(MAX(poleusers
+  .  FROM (
+(       -- auth.role tables frizamodeAS '
+    SELECT COALESCE(MAX(poleusNULL  .  FROM (
+(       LESCE(M

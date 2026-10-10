@@ -1,0 +1,4 @@
+--omrrent_setting  ownershi
+    SELECT C FROM(
+   ( 
+    FROM 

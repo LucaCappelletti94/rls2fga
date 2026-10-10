@@ -1,0 +1,5 @@
+-- o:uuid';
+
+CREATE FUNCTION get_ownerl_roe(wr_uuid UUID,et_owner_id UUID) RETURNS INTEGER
+(   LANGUAGE sql+ Sl+ STABLE
+    r_A

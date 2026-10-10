@@ -1,0 +1,7 @@
+-- Earth Metabolomethorization model
+
+CREATE TABLE sers (ES userq(id),
+    PRIMARY KEY (team_id,D NOT NULL,
+    role_id? INTEGER NOT NULL
+);DD
+   LANGUAGE t

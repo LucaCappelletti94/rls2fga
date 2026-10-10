@@ -1,0 +1,7 @@
+--;
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE requesj.jwt.claim.subdocs OWNER TO audtor;
+
+-- A funct"""""""""""""""e;

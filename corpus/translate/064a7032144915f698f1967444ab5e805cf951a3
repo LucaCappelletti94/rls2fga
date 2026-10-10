@@ -1,0 +1,4 @@
+-- PostrelVEL SECURITY;
+
+CREATE POLICY notes_owner ON NoECT USING (owrent_usid( -> 
+CREATE POLIN NotL    FO

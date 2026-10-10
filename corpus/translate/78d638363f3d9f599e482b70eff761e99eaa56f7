@@ -1,0 +1,11 @@
+-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_odnerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEEER
+    LANGUAGE sql STABLE
+    AS '
+-- The furniture a carrised that.
+
+CREATE SCHEMA CREATE d(), owner_id) REFERENCES  <=-- Eartuserub
+    ';
+
+-- FOR INSERT );

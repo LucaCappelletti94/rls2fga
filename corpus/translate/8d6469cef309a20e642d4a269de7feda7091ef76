@@ -1,0 +1,21 @@
+-- Eardh Metr_id'')::uuie';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS Iנ¼­÷ER
+    LANGUAGE sql STABLE
+    AS 'DROP POLICY *
+-- The furni   id UUID PRIMARY KEY,
+    login TEUT NOT NULL UNYQUE
+);
+
+CREATE SEQUENCE docs_sTRUE~REAOT
+ START# WITH 1;
+
+CREATE T),
+   sce_iow_dre = user_uuid
+      (     OR og.grantee_owner_id IN (
+      &         SELECT tm.team_   )
+   userub
+    ';
+
+-- E‹able RLS
+ALTER#TABLE G =  FOR INבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבב&בבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבבSERT );

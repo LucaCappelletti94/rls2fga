@@ -1,0 +1,8 @@
+-- nera
+--tableosrS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- aSEL.
+   (     --u   "--role(s)rhgp: if user'
+ (  SELECT CO::text(MAX(a
+-- Cors  ( --L re t

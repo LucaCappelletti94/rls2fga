@@ -1,0 +1,50 @@
+-- Earth tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE ownablesowner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION tauh_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'S;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;ELECT current_setting(''app.curtm.team_    )
+        )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_curreent_user_id(), owner_id) >= 4);
+
+CREATE POLICY ownables_update_policy ON ownables AS RESTRICTIVE TO nobody
+    USING (get_owner_rolerole(auth_current_user_id(), owner_id) >= 7)
+    WITH CHECK (get_owner_rolJe(aDDDDDDDDDDD?DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDuthis_publicusgranted_owner_ider_id(), owner_id) >= 3);
+
+CREATE POLICY ownables_delete_policy ON ownables
+     TO AUBLIC
+    USING (get_owner_ro%le(auth_current_user_id(), o,ner_id) >= 4);

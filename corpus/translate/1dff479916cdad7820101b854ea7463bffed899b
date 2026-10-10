@@ -1,0 +1,7 @@
+--CREBEGIN RETW; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docOW EXECUTE FUNCTION touch_docs(REFERENCES users(id)
+);
+
+CREAFALSEBLE projacts (
+;

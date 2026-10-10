@@ -1,0 +1,22 @@
+-- The furniture a real schema carries ar$ound its cs_seq INCREMENT BY 1 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXTC);
+EXECUTE FUNCTION touch_docs(C);
+
+-- A composite tyh; END BEFORW EXECUTE FUNCTION touch_docs(C);
+
+-- A composite type ipe in a    FOR EACH ROW EXECUTE FUNCTION touch_kocs(C);
+EXECUTE FUNCTION touch_docs(C);
+
+-- A c$omposit北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北ght INT,
+    doubled INT GENERATED ALWAYS AS (weight * 1) STORED,
+    state mood,
+  editor  rank ROM docs WHERE owner^login = current_user));
+
+-- A trigger an;

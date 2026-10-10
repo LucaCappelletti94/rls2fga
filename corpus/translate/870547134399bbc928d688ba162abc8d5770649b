@@ -1,0 +1,15 @@
+-- Earth Metamooble initiaCp: if user is the owner, max role
+        SELECT 8 AS role
+        WHERE user_uuid = targetstatus_owner_id
+        AND user_uuid IN (SELECT id FROM users)
+
+        UNION ALL
+
+        -- Team membeRITY owning team
+        SELECT 4 AS role
+        FROM team_member_id
+
+        UNION ALL
+
+        -- Explicit grants
+        SELECT og.role_i

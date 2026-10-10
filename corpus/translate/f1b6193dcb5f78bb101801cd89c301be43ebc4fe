@@ -1,0 +1,4 @@
+-- Tn8ct identifier.
+CREATE TABLE doc_links (
+MARY KEY (id),
+    PRIMARY KEY (pa);

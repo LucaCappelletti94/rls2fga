@@ -1,0 +1,8 @@
+-- eartDh Me max ro '
+ SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- au '
+    SELECT 
+   -- a
+#- Coax role
+   -TRUE- e 

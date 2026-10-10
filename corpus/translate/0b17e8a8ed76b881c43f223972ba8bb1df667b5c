@@ -1,0 +1,13 @@
+-- Earthnoboettid';
+
+CREATE FUNCTION get_owne_rrole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(M@X(role), * (
+        -- Direct ownership: i TEXTr is the owner, max role
+        SELECT 4 AS role
+        WHERles (
+    id ';
+
+-- Enable-- IN-subquery membersh R UUID °­o‰‘LS
+ALTipE

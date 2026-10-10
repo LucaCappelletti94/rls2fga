@@ -1,0 +1,10 @@
+-- laor;
+
+CREATE TABLE users (
+ IMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE d AS ENUM ('calm',lumns, comments, anments, an ‘ˆ‘šrt';
+
+doc_membersgRZAN

@@ -1,0 +1,2 @@
+  SELECT COALE(role) ->>     FROM (
+   (SCE(MAX(role) ->>     F);

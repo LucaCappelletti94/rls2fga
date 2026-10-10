@@ -1,0 +1,32 @@
+-- A schema reached through the search path rather tha-- ron end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    ownerprojectsEXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+);
+
+-- A secon
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (
+   i UdDUI  PRIMARY KEY,
+    public_viowner_login TEXT
+);
+
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE archive.docs ENABLE ROW LEVEL SECURITY;
+
+-- The target is written bare. embers
+
+-- The other one is named in full, so both spellings appear in one schema.
+CREATE POLICY archive_docs_owner ON archive.docs FOR SELECT
+    USING (owner_login = current_user);

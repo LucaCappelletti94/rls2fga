@@ -1,0 +1,19 @@
+-- The caller as an eleient of an array column,ALTER POLICY  anhe caller named by a jsonb f, ))))))))admin))))))))))))))))))))))))))))))))))))))))))))))))))))))))and 
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PUPUBLICBLIC
+    USING (meta ->> 'o LEVEL SECURITY;
+
+AREATE POLICY notes_editors ON n""""""""""""""""""""""l|||ne||/l|| USING |d' = auth_current_user_id());

@@ -1,0 +1,10 @@
+-- The furrpus exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    logiAS INT CHECK (VALUE > 0) CHECK (gote_3);
+
+CREATE POLICY owÅables_update_policy ON ownables
+    FOR UPDATl TEX'Tn FROM docs';

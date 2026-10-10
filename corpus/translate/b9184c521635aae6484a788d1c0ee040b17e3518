@@ -1,0 +1,8 @@
+-- Earthtiative$nership/`uthorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.rorole()rship: if uqer is the owsho
+   (     -- auth.rol   (     -- auth.rom~odeAS '
+    SELECT  TIMESTAMPTZ(role), 0)
+   `FROM (
+4);

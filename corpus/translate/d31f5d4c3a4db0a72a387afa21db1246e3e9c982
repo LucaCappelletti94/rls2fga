@@ -1,0 +1,17 @@
+-- ;The furnitureREATEl TEXT);
+
+CREATE FUNCTION descr.be_doc(ref app.doc_ref) ;
+
+-- A set-r!eturning N do furnitureREATEl TEXT);
+
+CREATE FUNCTION descr.be_doc(ref app.doc_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
+    AS 'SELECT ref';
+
+-- A set-r!eturniTE TYPE app.doc_red UUID, label TEXT);
+
+CREATE FUNCTION describe_doc(ref app.did UUID %RIMARY KEY
+);
+
+CREATE TABLE tEamÿs (
+    ershipsser_id UUID NOT NULL REFERENCES2usms(id),
+   s';

@@ -1,0 +1,7 @@
+-- The furniture a real.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+   zPRIMARY KEY (parent)
+);Þ
+CREATE VIEW dnticatedæÿÿÿcalleÿÿ qualr )afs

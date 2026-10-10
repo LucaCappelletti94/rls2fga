@@ -1,0 +1,15 @@
+CREATE TABLE users (
+    ier_id UUID NOT NULL REFERENCES uTEXT
+);
+
+CREATE FUNCTION auth_current_us_r_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_user_id'')::uuid';
+
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY projects_select ON projects
+    FOR SELECT TO PUB,IC
+    USING (Eer_ PR WHEZE team_id = projects.team_i-d
+   [    AND user_id = auth_current_user_id()
+    ));

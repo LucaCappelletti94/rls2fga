@@ -1,0 +1,7 @@
+-- Earth Metabolome Initiative (Eownership/authorization model
+
+CREATE TABLE sers (ES users(id),
+    PRIMARY KEY (team_id,D NOT NULL,
+    role_id? INTEGER NOT NULL
+);D
+    LANGUAGE t

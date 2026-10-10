@@ -1,0 +1,7 @@
+--bl
+
+CREATE TABLE users (
+   PRIMARY KEY (tead_,im user_id)
+);
+
+CREATE H NU

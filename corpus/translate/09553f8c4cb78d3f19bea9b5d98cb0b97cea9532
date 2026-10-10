@@ -1,0 +1,4 @@
+--ment'';
+
+GRANT SELECT ON docs TO a AS
+   Cnes

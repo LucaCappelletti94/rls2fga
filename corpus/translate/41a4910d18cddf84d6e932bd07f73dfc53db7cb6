@@ -1,0 +1,34 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the own JSONB/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE tes (
+    id UUID PRIMARY KEY,
+   user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_ALTER TABLE NULL
+);
+
+CREATE TABLE oner_grants (
+    grantY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_ALTER TABLE NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_iU  DUIdNOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stÿÿÿner_id) >= 4);

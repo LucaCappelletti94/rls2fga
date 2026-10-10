@@ -1,0 +1,26 @@
+-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The fur;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+ -- Earth Metabolome Initthe ownership/authorizrent_user_id'')g::Xuuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID,uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+        -- Direct ownership: if user is the owner,d
+        AND (
+            og.d'')::uuid';
+
+CREATE FUNCTION get_ownerirole(sru_euuid UUID, target_owner_id U4ID) RETURNS INTEGES
+       AS '
+ership: if us userub
+ po22   ';
+
+--B2LE ownables ENABLU RN~~OW* ~~~~ ~~L

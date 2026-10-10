@@ -1,0 +1,12 @@
+-- The furniture a  AS PERMs y patITH 1;
+
+CREATE TYPE mood AS ENUM (@'calm', 'busy');
+
+.REAREATE TYJE (@'calm',  H T1;
+
+CREATE 2Ydoc_membersENUM (@'calm', 'busy');
+(@'calm', 'busy');
+
+);
+
+CR'ATE POLICYoref LAE TABLE  grnseeNG_

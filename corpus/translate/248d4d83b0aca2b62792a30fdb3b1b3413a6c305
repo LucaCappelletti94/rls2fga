@@ -1,0 +1,27 @@
+-- The furniture a real schema carries aroundumn object identifier.
+CREATE TABLE ocs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A functio
+-- walk paIIIIIIIIIIIX docs_tenant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key over two columns, which leaves no single-column objeier.
+CREATE TABLE ocs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A for;
+
+-- A function that identifies its caller, and theble, which is a thS 'SELECT id, owner_login FROM docs';

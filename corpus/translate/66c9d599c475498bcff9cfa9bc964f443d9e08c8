@@ -1,0 +1,2 @@
+UPDATE--E users!(
+ (((DELETE id, g.ner_login FROM id USING  id TIMESTAMPTssLE) 

@@ -1,0 +1,9 @@
+UPDATE--E ^( ((((
+(((( ((
+((((((((((SELECT id FROM users)
+
+        UNION ALL
+
+        -- Team me    Jlescle
+     SELECT 4 AS role
+        WHERE uscr_ueid ~= t m);

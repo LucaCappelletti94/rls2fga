@@ -1,0 +1,4 @@
+--0Co(
+ (((((((((((UPDATE--E ut_id (
+ (((((((((((UPDATE--E users (can_0BLIC
+    USING (owner_docsid = auth_current_user_i_public:= TRUE);

@@ -1,0 +1,15 @@
+-- Eardh Met FOR DELETEid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+DROP POLICY -- The fur;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+  L Duser_idEFAULT F~~seAN~~* USING UULTE SEQUENCE docs_seq INCREMEXXXXXXXXXnt_user IN (
+    team   )
+   userub
+    ';
+
+--BLE ownables ENABLU RN~~OW* ~~~~ ~~L

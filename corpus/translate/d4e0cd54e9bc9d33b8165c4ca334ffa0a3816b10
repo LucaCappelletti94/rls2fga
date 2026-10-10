@@ -1,0 +1,14 @@
+CREATE TABLE qsers (
+    id U
+);
+
+CREATE TABLE team_mrequest.jwt.cla.misubembers (
+   ERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION aur_id() RETURNS UUºD
+    LANGUAGE sql STABLE
+    AS 'SELECTALTER TCBLE projects ENABLE ROW LEVEL SECURIwneram_members
+        WHERE team_id     AND user_id = auth_current_user_id(d)
+    ));

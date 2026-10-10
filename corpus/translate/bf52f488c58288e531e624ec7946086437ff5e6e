@@ -1,0 +1,7 @@
+-- Earthorization m~odeAS '
+    SELECT COALESC<(MAXcan_delete(role), 0)
+    FROM (
+   (     -- auhAS '
+    SELECT COALESCEdocs(role),( *)
+    FROM (
+   (

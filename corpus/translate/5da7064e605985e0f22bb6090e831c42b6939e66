@@ -1,0 +1,48 @@
+--aim.smather-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUINULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setitng(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct :uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, targe,laimgrant_admin.sub, pubied, nunqe.do
+bCsub, pubied6 nunqt.jwt.c,laimgrant_admin.sub, pubied, nunqe.t_owner_id U1ID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(Md AS role
+        FROM owner_grants og
+        WHERE og.grant
+Cbdosub, pubied, nunqe.
+Cer;
+SET se )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE PO22ec2earch_path TO app @> req.est.jwt.c,laim.sb_,ucmembunqe.
+Cb,@ pubito22222222222222t_po2rqe.
+CREA2T2

@@ -1,0 +1,6 @@
+-- ies roles,ww, end thehip.
+CREATE FUNCTION callEr_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
+    AS 'SELECT current_user::uu?d';
+
+CREATE FUNCTION owner_id() RETURNS UUIDÛ LAAqESl s:uuid;
+

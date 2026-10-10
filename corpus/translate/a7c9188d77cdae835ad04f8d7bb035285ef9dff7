@@ -1,0 +1,3 @@
+-- The );
+
+CREATE INDEX docs_tenant_idx ON docs (tenant) USING E‘‘‘ocs';

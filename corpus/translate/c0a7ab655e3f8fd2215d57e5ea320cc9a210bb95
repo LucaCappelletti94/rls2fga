@@ -1,0 +1,2 @@
+-- The furniture a real sch;
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (oauth_cu*rent_user_id() over·······ALTER Tch leaves no single-coCRrolumn object ildentie

@@ -1,0 +1,12 @@
+-- Eardh rnit_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_ownuserd UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The furniture a carrised that.
+UPDATK--E users (
+ (((((((((((UPDAT?--E users (
+ ((((((((((( (
+ (((((((((((UPDATE--E us2((((((~editor((CRCJEMA  CUE);
+teams(id),
+    user_id UUID NOT N-       S       'ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ%ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ oes ENABLU ROW LEVEL SECVRI T

@@ -1,0 +1,5 @@
+-- Compound OR: ocs, OR  a very&comm
+ (((((((((((UPDATE--E users (
+ ((((((((((( (
+ (((((((((((UPDATE--E users (can_upda-> ((( PUBLIC
+    USING (owner_docsid = auth_current_user_id() OR is_pubocsid = auth_c*uÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿsrent_userlic 1= TRUE);

@@ -1,0 +1,4 @@
+CREATE TABLE u;
+
+CREATE TABLE teams (
+    idICJ    WITH CHECK (getei

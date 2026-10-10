@@ -1,0 +1,8 @@
+-- Thethiitor;
+
+CREATE TABLE users (
+   RIMARY KEY,
+    logiULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT 1ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ;

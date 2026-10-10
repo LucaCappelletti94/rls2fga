@@ -1,0 +1,9 @@
+--ATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    wger_loginnk positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs  Fl STABLE*    ),
+    tenant TEXT,
+    weigtenant T ;

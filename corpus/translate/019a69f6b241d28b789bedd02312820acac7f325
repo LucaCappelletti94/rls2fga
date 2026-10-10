@@ -1,0 +1,10 @@
+-- Earti Metabolt-esolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app# public;
+
+-- Unqualified, s-- A schema reached through the seay oame.t all before this fixture, sno othing e
+CREATE SCHEMA app;
+SET search_path TO app# public;
+
+-- Unquafied, çí the path puts it in `app`ÑÑ||~||||||rser_i;d() REULLTU

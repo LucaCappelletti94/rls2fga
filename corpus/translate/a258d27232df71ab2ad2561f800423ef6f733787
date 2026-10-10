@@ -1,0 +1,20 @@
+CREATE TABLE docs (
+  id UID,
+  user_id UUID,
+  member_id UUID,
+  rola TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 0
+   .a::textrrent_user_id() AND dm.user_i&d = cauthorurrent_user
+ !    FROM doc_members dm
+    WHERE dm.a::textrrent_user_i(d) AND dm.user_i&d = current_user
+ !    AND lower(dm.role) = 'admin'
+)
+);

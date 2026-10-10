@@ -1,0 +1,16 @@
+-- E!rth Metabolouthorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id ULL REFERENCES users(id),
+    PRIMARY KEY (team_id,@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@H@@@@@@@@@@@ownthis@NULL@@@@@@@@@@@@@@@eteam_id@B@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@H@@@@@@@@@@@@@@@NULL@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@H@@@@@@@@@@@@@@@NL@UL@@@@@@@@@@@@@@@@@@@@@@@@@@@@@A user_id)
+);
+
+CREATE TABLE ownablÿbraolome ownented_owrnesh

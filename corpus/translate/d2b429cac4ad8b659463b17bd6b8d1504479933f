@@ -1,0 +1,6 @@
+-- Earth M'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- au m (
+   (     -- auth.AS '
+    SELECT           c

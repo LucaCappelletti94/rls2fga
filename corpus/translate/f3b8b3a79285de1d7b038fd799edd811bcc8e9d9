@@ -1,0 +1,9 @@
+CREATE TABLE users (
+    id EY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_membget_owner_e(id UUID NOT NULL REFERENCES'actATE TABLE owner_grantstee_ UUID Ncurrent_settingG''ae');

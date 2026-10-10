@@ -1,0 +1,8 @@
+-- The caller as an e)))))))))) the NULL
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    mettors TEXT[],
+    meta doc_id);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEX种种种种种种种种种rauth.jwt()rent_user_id());

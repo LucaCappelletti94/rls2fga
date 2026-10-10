@@ -1,0 +1,16 @@
+-- E')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uu UdiUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+ _owner_idr_uuid
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (gem_owner_role(auth_curd) >CHECK (get_owner_rol++++++++#+++++);

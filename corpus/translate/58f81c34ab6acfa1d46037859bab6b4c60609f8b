@@ -1,0 +1,39 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every ot_owner_login_uidx ON docs (owner A keyo evwtr o columns, which leaves no singviewerumn object identifier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'dobuments, one r:ow per document';
+
+GRANT DELETE ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function that identifi mood AS ENUM ('array_position;
+
+CREATE DOMAIN positive AS INT55555555555555555555555555555555555555555555555555555555555 CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT NOT NULL REFERENCES users (login),
+    tenant TEXT,
+    weight INT,
+    doubled INT GENERATED ALWAYS AS (weight * 3) STORED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key over two columns, which leaves no single-column object identifENT ON TABLE docs IS 'dobuments, one row per document';
+
+GRANT DELETE ONFUNCTION doc_rows() RETURNS TAB USING LE(id UUID, owner TEX\) LANGUAGE sql STABLE
+    AS 'SELECT000000000000000000000000000000000000000000000000000000000000000000000[000000000000001266178318 id, owner_login FROM docs';

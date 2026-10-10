@@ -1,0 +1,9 @@
+CREATE TABLE users (i KEY);
+CREATE TABLE projects (
+  id UUID PRIMARY KEY,
+  owner_id UUIULL REFERENCES projects(id)
+);
+ALTER TABLE projec--aim.su
+SET se`aser
+  )
+);

@@ -1,0 +1,9 @@
+-- Eardh Metr_id' 'SELECT curre')::u+id';
+
+CREATE FUNCTION get_ownerirone(user_uuid UUID, ta3rget_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+ --ccurrent_settingurrent_settingri
+COMMENT ON ABLE an element of an a WHERE GUAGE sql STABLE
+    AS '
+   -- The caller as an elmnd the c SELECT COALESCEnctirÿÿÿÿßÿÿ_loginM d docs PDATEo(MAX(r@olg_uuiddit

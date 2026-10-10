@@ -1,0 +1,2 @@
+--
+SET seh_pah TO SELECT 0 FROM wtcsuehma JOIN& bie

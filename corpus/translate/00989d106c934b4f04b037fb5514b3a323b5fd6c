@@ -1,0 +1,13 @@
+-- Eare Initiative (n model
+
+CREATE TABLE users (
+    id INTEGER NOT NULL
+);
+
+-- -e (n model
+
+CREATE TABLE users (
+    iole_id INTEGER NOT NULL
+);
+
+-- -Funcniti)

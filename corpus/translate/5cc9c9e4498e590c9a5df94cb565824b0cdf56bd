@@ -1,0 +1,5 @@
+CREATE TABLE ales (
+    
+ c BOOEAN NOT NULL DEFAULT FALSE
+);
+);

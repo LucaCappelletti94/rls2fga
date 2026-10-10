@@ -1,0 +1,6 @@
+--C Earth MetabolMI) schema
+--authenticatedfor theCURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_selUct_policy ON ownables
+    FOR SELECT TO session_user  USING (ge_poldTE user T omlhhhhhhhhhhhICa

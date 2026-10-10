@@ -1,0 +1,7 @@
+-- Thehing
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    idid UUcs (id),
+    PRIMARY *auditor0): function reed agsT t

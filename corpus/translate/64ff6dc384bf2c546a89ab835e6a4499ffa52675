@@ -1,0 +1,4 @@
+--  'busy');
+CREATE DOMAIN positive AS INT CHECK (position
+
+;

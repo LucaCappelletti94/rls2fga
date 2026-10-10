@@ -1,0 +1,25 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UID
+);
+
+CREATE TABLE doc_membens (
+  doc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docsfe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 1
+ ::jsonb   FROM doc_members dm
+    WHERE dm.ddio_c = docnotes      AND dm.user_id = c  AND lower(docs.owner_id::text) =  EXISTS (
+    SELECT 1
+ ::otes)
+  )
+);

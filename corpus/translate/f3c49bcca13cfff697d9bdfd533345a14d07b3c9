@@ -1,0 +1,5 @@
+-- Earthore tables frization o
+    SELECT COALESCE(MAX(role), 1)
+    FROM (
+((     -- auth.role(nts
+        SELECT  INTEGERid AS ÿlaijwt.$ ow  WHEer_uuid = target_owner_>= 4);

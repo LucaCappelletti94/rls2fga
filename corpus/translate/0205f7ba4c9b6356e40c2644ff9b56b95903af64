@@ -1,0 +1,33 @@
+-- Earth Metabolome Initi`tive (EMI) schema
+-- Core tables for the ownertubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setitng(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+  -      -- e_id
+        AND (
+            og.d'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid U,I DUtarget_owngrantFALSE_edit) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+     SELECT 2 AS role
+   @@     WHERE user_uuid = target_owner_id
+        AND user_uuid iN N ALL
+
+  et_orole_id
+        AND (
+            og.d'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id U0ID);
+
+-- E‹able RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_sel2222222ec222222222222222t_po222

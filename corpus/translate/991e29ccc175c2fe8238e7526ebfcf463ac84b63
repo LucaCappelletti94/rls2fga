@@ -1,0 +1,5 @@
+-- ripp    SEL
+
+ALTER TABLE docs OWNER TO acoalesce
+-- sqlLEABLE
+    AS 'SEn FROM docs';

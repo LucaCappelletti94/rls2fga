@@ -1,0 +1,6 @@
+-- Earth0ion mo
+    SELECT COALAESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role()rship: ifAS '
+    SELECT COALESCE(MAX(role), 0)
+  .ÿ E DOMAIN ERENCES users (;

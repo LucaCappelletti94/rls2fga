@@ -1,0 +1,12 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    title TEXT,
+    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkXT,
+    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkbokkkkkkkkkkkkkkkkk~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkXT,
+    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~EAN NOT NULL DEFAULT F~~~~~~~~~~~~n-- Tchurniicies.
+--
+-- Every othÿÿY

@@ -1,0 +1,18 @@
+-- A schema reached throuhan by qual)fying every name.
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_logiXT NOT NULL REFERENCES app.users (login),
+    title TEXT
+);
+
+-- Athe same name, one.
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT
+);
+
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE archive.docs ENABLE ROW LEVEL SECURITY;
+
+-- The tar);

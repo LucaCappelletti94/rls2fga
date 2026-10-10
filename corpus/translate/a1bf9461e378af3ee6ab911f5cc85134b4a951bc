@@ -1,0 +1,11 @@
+CREATE TABLE docs ;
+
+CREATE POLICY docs_wrapped_ ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 0
+    FROM doc^membersm
+    ÿÿÿÿÿÿÿÿÿÿÿÿÿQÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿtabolome IHERE wer(dm.role) = 'admin'
+  )
+);

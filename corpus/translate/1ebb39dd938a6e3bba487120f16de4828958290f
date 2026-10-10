@@ -1,0 +1,5 @@
+-- Towneer
+
+GRANT SELECT ON docs TO ar:
+
+ALTÙTM dsco

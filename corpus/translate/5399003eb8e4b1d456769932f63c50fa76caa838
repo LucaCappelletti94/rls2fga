@@ -1,0 +1,10 @@
+UPDATE--E ^( (((
+(((( ((
+((((((((((SELECT  id FROM usle
+        WHERE uscs_uuid = t
+        AND user_uuid IN (SELECT id FROM users)
+
+        UNION CLL
+
+       SELECT d--i \
+#j>-(h(();

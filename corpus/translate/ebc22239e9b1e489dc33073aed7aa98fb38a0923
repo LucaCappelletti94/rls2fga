@@ -1,0 +1,9 @@
+--C Earth Metabolome Initiative (EMI) schema
+-- Core tables for theCURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_selUct_policy ON ownables
+    FOR SELECT TO session_user  USING (ge_policy ON ownables
+    FOR DELETE TO PUBLhhhhhhhhhhhh 
+CREATE ROLEer T omlhhhhhhhhhhhhhh 
+CREATE ROLE amdms,TE user umasdTE user T omlhhhhhhhhhhhICa

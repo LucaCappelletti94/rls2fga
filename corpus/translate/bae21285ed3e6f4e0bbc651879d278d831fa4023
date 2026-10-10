@@ -1,0 +1,11 @@
+-- Earth Metabolome Initiative (EMI) sABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownabolicy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_curradminent_user_id(), owner_id) >= 0~= UUREATA  (RATA  (
+~= UURATUURATA  (REATA  (
+~= UU= 2);
+
+CRE
+   ;

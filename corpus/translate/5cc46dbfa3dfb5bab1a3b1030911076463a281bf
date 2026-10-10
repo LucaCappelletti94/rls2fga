@@ -1,0 +1,22 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the owners NULLnction stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setitng(''app.current_user_ DEFAULT id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COuuid = target_owner_id
+        AND user_uuid IN (SELECT id FROM users)
+
+   .grantee_owner_id = user_uuid
+      (     OR og.grantee_owner_id IN (
+      &      ]   SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABLE oer_role(auth_current_user_id(),sert_policy ON ownables
+  =  FOR INSERT );

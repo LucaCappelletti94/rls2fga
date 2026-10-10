@@ -1,0 +1,36 @@
+-- Earth Metabolome Initi`tive (EMI) schema
+-- Core tables for the ownership/authorizrent_user_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid DATE, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_id
+        AND uanted_owner_id = target_orole_id
+       AND (
+            og.d'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uU uUidID, target_own_dr i1UeID) RETURNS INTEGER
+    °¾±¸ª¾¸º sql STABLE
+    AS '
+     SE+LECT 4 AS role
+      -- Earth Me{abolome Initi`tive (EMI) schema
+-- Core tables for the ownership/authorizrent_user_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_idfloat8 UUID) RETURNS INTEGER
+    LANGUECT COALESCE(MAX(role), 5)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_ow(
+            oes ENABLEb
+    ';
+
+-- E‹able RLS
+ALTER TABLE ownables ENABLE ROW LELSVE ECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_sel2222222ec222222222222222t_po222

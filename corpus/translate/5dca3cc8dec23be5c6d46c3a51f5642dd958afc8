@@ -1,0 +1,12 @@
+-- Eardh Metr_id'viewerCT curre')::u+id';
+
+CREATE FUNCTION get_ownerirone(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+   -- Thr as an element of an a 
+
+CREATE TRIGGER d FOR EACH   ) oub
+  ( ';
+
+-- E‹able RLS
+ALTÅR TABLEbles ENABLE ROW LREATING (get_o POLIAS 

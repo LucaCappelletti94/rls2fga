@@ -1,0 +1,12 @@
+-- Earth MetabolomeS '
+    SELECT COAadmin(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.rol   (     -- authupdate.role()rship: if user is the ownera
+-- Core tables~orization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     SELECT COAL NOT, 0)
+    the ownera
+-- Cshorization m~odeAS '
+orizationw) >= 4);

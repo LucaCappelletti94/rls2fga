@@ -1,0 +1,5 @@
+-- fudeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- 
+    SELECT CO IS NE(MAX(r

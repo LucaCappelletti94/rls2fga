@@ -1,0 +1,5 @@
+-- A filt RUE);
+
+CREATE POLICY notes_owner_writes ON tetenant_ids
+    FOR UPDATE TO P USING (owner_id @ -uth_current_user_id())
+    WITHÿÿE)&;

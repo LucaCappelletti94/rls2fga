@@ -1,0 +1,9 @@
+-- The furniture a real schema carriall of it without trtifier.
+CREATE TABLE doc_links (
+ REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, chilub, pubied, nunqe.
+Cbdoc_memb.c,laim.sub, pubied, nenqe.
+Cb,@ pubied, nunerolerqe.cself,laim.smmmmmmmmmmmmmmmmmmmmmub, pubied, nunqe.
+Cb,@ pubied, nunedlaim.sub, pubied, nud_id)иииииииииииr TEXT) LANGUAGE sql STABLE
+    AS 'SELECT iЪd, owner_login FROM docs';

@@ -1,0 +1,9 @@
+-- Theolicies.
+--
+-- Every other fixture is a policy pattern on two cs (tenant);
+CREATE UNIQUE INDEX docs_o USING wner_login_uidx ON docs (owner_login);
+
+-- A key ovÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿer two columns, whichifier.
+CREATE Ttor;
+
+-- AA fuRY

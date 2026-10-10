@@ -1,0 +1,13 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_membeITY;
+
+CREATE POLICY doafe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  Et_owner_role(
+    FRO )
+);

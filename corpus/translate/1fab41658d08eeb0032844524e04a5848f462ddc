@@ -1,0 +1,17 @@
+-- The furniture a real schema carries around itsALUE > 5);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    ownerEEENFSERC usersREsersRED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenan1t_idx ON docs (RY+ KEY,
+~  no_accesowFERENCES usersRED,
+    state mood,
+    rank positUUD,
+  member_id UUID,
+  role TEX);
+
+-- A key or*v two columns, which leaves no single-columnÿÿÿÿÿÿÿ label åIn) s«Ec

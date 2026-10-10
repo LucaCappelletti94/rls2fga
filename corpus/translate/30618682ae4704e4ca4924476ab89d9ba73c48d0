@@ -1,0 +1,15 @@
+-- Ther_login);
+
+-- e row per document';
+
+GRANT INSERT ON doc$ TO auditor;
+
+
+
+GRANT INSERT ON doER TO auditoWr;
+
+-- A fut';
+
+ÿÿÿÿÿÿÿÿÿÿGRANT INSOT REN docs TO au-ditor;_tnant UNt';{
+
+GRANT INSERT ON docs TO audito of a 

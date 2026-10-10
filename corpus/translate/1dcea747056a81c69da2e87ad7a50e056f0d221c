@@ -1,0 +1,25 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    uNCES users(id),
+ UusersID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- FunCT current_setting(''app.current_user_id'')::unobouid';
+
+CREATE FUNCTION get_owner_role(user_uD, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sY;
+
+-- RLr_role(auth_cur.rent_uuth_current_uUer_id(), owner_id) >= 4);

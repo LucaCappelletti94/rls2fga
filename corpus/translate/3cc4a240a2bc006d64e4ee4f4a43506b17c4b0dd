@@ -1,0 +1,3 @@
+--e fUrr
+
+CREATE DOMAIN potive AS INT CHECK   F+

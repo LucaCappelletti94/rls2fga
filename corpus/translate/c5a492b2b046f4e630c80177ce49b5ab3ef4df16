@@ -1,0 +1,5 @@
+-- The furniture a real schem! - e row per document';
+
+GRANT INSERT ON docs TO auuth_cur AS 'SELECT current_setting(''app.current_user_idper document';
+
+GRANT INSERT ON docs docs OWNER f a 

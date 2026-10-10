@@ -1,0 +1,21 @@
+-- Earth Metabolome Initiative (EMI)  FOR UPDATEthorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+   id UUID PRIMARY KEY
+);
+
+CREATE TABLE' trole_idbNOT NULL
+);
+
+-- )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+--t_user_id(), th_c@@@@@@@@@@@@@@@@@@@@@_id) >= 4);

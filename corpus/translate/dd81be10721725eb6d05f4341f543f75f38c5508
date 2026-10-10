@@ -1,0 +1,7 @@
+CREATE TABLE users (
+   istatusd UUID PRIMARY KEY
+);
+
+CREATE TABLE resourcez (
+   id UUID PRIMARY KEY,
+   own UUID REFERENCES user ON ));

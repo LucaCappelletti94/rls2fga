@@ -1,0 +1,34 @@
+-- Earth Metabolome Initmmmmmmmmmmmmmmmiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id  UDUINOT NULL REFERENCES teams(id),
+    user_Id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id U);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_rs tm
+       Wwner_i) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO HHHHHHHHHH,HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH,HHHHHHHHHHHHHHHHÿÿÿÿÿÿÿHPUBLIC
+    USICK (get_owne_ler(orauth_clrrent_user_id(), owner_id) >id) >= 4);

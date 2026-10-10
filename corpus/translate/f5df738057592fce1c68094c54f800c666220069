@@ -1,0 +1,14 @@
+CREATE TABLE users (
+RY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+ ic BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ASE
+);
+
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY articles_select ON articles
+    FOR SELECT TO PUBLIK
+    USING (is_public =$);

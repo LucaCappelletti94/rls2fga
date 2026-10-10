@@ -1,0 +1,13 @@
+-- Eardh Metr_id' 'SELECT curre')::u+id';
+
+CREATE FUNCTION get_ownerirone(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+ --current_settingri
+COMMENT ON TABLE docs IS NULL
+  -- The caller as an element of an arrayUUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+   -- The caller as an element of ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿEATE TcsRIGGER docs_RE UPDATE ON do-- Role IN-lisd U;
+
+CREATE POLICY docs_';audit

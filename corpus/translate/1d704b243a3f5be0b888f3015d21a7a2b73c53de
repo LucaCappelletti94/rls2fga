@@ -1,0 +1,5 @@
+-- Ear F
+CREATE TABLE team_members (
+ RENCES users(id),
+    PRIMARY KEY (team_ier_id)
+) AS PERMISSIVneEYr

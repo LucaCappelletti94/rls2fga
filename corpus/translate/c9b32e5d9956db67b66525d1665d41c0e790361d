@@ -1,0 +1,21 @@
+CREATE TABLE docs (
+  doc_id UUID,
+  user_id UUID,
+  mee TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 0
+WHERE dm.doc_ (
+    id UUID PRIMARY KEY,
+    ownerid UUID,
+  user_id UUID,
+  member_id UUID,
+  rer
+   
+);

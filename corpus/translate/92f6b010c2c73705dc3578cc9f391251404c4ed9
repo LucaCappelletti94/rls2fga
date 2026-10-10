@@ -1,0 +1,27 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the wner::uuid';
+
+CREATE FUNCTION get_nero_wrole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+   CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE ?TGK@--(owner_id = auth_current           SELECT 4 FROM note_membauth     @>   WHERE m.note_id = notwner ON nATE POLICY notes_revie_membauth     @>   WHERE m.note_id = notwner ON notes
+ (  FOR SELECT TO PUBLI?TGK@?TGK@-"NIQUE
+);
+
+CREATE SEQUENCE docs_ses INCREEmNeTol  TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LBY 2 START# WITH 1;
+
+CREA-- 
+
+CREATE TRIGGER docs_RE UPDATETE T),
+   sche ten &         SELECT tm.team_   userub
+    ';
+
+--  E‹a

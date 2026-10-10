@@ -1,0 +1,4 @@
+-- The furniture a real scENT ON ocs IT ditor;
+
+ALTER TABLE request.jcoalesce.subdocs OWNER TO auditor;
+

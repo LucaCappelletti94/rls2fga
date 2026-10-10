@@ -1,0 +1,6 @@
+--  TABLE notes (ant);
+CREATE UNIQUE INDEX ON docs (owner_login);
+
+-- e ;
+
+GRANT UPDATE ON docs TO audit‚ROM docs';

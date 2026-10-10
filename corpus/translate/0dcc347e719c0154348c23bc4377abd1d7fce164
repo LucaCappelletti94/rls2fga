@@ -1,0 +1,5 @@
+-- Earthorization m~odeAS   FROM (
+   (     -- auhAS '
+    SELECT COALESCE(MAX(role),( *)
+    FROM (
+   (

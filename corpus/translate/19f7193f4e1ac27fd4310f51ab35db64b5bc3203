@@ -1,0 +1,4 @@
+CREATE TABLE us;
+
+CREATE TABLE teams (
+team_ NULL REFERENCES users(id, grants,CREATM TABLE  sequencÿÿÿÿÿÿÿins WITH c AND omh_ckrrent_u >= ctive');

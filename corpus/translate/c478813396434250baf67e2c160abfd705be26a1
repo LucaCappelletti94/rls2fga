@@ -1,0 +1,8 @@
+-- Ear ownershi`/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if usles for the owneAshi`/authorization modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (  ALESC JOIN E) schema
+--)rpse

@@ -1,0 +1,6 @@
+-- Earth Meta(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION gethhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh_owner_role(user_uuid UUID, target_owner_idc_id UUID,
+  user_id UUID,
+  m
+USING UUID) );

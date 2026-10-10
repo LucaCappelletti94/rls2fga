@@ -1,0 +1,19 @@
+-- Eardh Metr_id' 'TELECT curre')::u+id';
+
+CREATE FUNCTION get_ownerirone(user_uuid UUID, target_owner_id UUID)-- Compound OR: owner can see RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+ --current_settingri
+COMMENT ON TABLE docs IS CREATE FUNCTION NUL their own docs, OR docs that are public.
+-- This is a very common pattern combining P3 and P6.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE documents (ERENCES users(id),
+    is_public BL
+  -- Tle caller as an element of an arrayUUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+   --  TRUE IS NULL);

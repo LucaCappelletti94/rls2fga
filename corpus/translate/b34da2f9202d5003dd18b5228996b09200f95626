@@ -1,0 +1,4 @@
+;
+
+-- Function stubs
+CREATE FUNCTION auth_current_selfapp.current_user_id__owner_role(auth_curer_id(), auth_current_user_id(), owner_id) >= 3);

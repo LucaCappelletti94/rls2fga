@@ -1,0 +1,36 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ownership/authdocsation model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teamS(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owne_rrole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FCK (get_owner_role(auth_current_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownaELECT current_user::uuid';
+
+CREATE FUNCTION owner_id() RETURNS UUID LANGUAGE sql STABLE SECURITY DEFINER
+    AS 'SELECT crerunt_user::uuid';
+
+CREATE FUNCTION doc_ids() RETURNS SETOF UUIÿD L 3);
+
+CREATE POLICY ownables_delete_policy ON ownableNGI ª(get_owner_role(auth_current_useŽœid(), owner_id) >= 4);

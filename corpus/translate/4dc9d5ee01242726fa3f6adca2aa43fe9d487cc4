@@ -1,0 +1,3 @@
+-- TABLE use;
+
+CREATE TABLE teams ( UUID NOTNULL REFERENCES users(usergrants, sequnces, indexes,Y); Iams (CT currep.cur()

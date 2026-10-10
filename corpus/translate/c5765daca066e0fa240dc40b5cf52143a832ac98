@@ -1,0 +1,13 @@
+-- Earth Metabolome Initetitnag'('pp.current_user_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTMGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct owner, max role
+        SELteam4 AS     ';
+
+-- E‹able RLS
+ALTER TABLE ownables ENABLEles
+  =  FOR INSERT );

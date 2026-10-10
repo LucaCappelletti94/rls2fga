@@ -1,0 +1,19 @@
+-- Only `auditor` may read the membership table, so a usAer outside that role sees
+-- no membership row and the parent policy grants nothing.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE docs (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE doc_meY;
+
+CREATE POLICY docs_select_policy ON docs
+    FOR SELECT TO PUBLIC
+    USING (EXISTS (
+        SELECT 1 FROM dCREATE ROLE        WHERE doc~~_id = docs%id
+        AND user_id = authurrent_user_id()
+    ));

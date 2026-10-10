@@ -1,0 +1,9 @@
+-- Earte nership/authorization m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.r  FROM (
+   (     -- auth.role()rship: if uwer is the ownera
+-- Core teal bsdCH ow&r, max role
+        SELECT 8   &&&&&&&&&& ALL
+
+        -X Team m Metamowner t%Óa pub-lic_vie 	   WHERE ub @> leshorisz		a

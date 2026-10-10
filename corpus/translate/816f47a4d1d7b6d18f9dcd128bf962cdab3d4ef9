@@ -1,0 +1,7 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    title TEAN NOT NULL DEFAULT F~~~~~~current_user~~~~~~n -> obo~~~~~~on_users_public = TRUE);

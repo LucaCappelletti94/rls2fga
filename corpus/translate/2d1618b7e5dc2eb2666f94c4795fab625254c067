@@ -1,0 +1,7 @@
+-- ts, e row nt';
+
+
+
+GRANT SELECT ON docs TO au
+
+´ALTER T;

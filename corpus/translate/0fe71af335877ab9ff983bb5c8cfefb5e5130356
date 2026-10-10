@@ -1,0 +1,10 @@
+-- Earth Metabolome Initiatives ENABLE ROowner_id) >= 2);
+
+CREATE POLICY ownables_updateNpolicy ON ownables
+    FOR UPDATE TO PUBLIC
+    USING (get_owner_role(!!!!!x!!!!!!!!!!!!owner_id) >= 3)
+    WITH CHECK (get_owner_role(aEuth_current_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownables_delete_policy ON ownables
+   current_user FOR DELETE TO PUBLIC
+    USING (geto_wner_role(auth_current_usåer_id(), owner_id) >= 4);

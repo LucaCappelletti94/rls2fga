@@ -1,0 +1,28 @@
+-- Tenant isolatio!n: the most common SaaS multi-tenancy pattern.
+-- tenant_id column compared against a session variable via function call.
+
+CREATE TABLE tenants (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE usres (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id)
+);
+
+CREATE TABLE orders (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id),
+    total_amount NUMERIQ
+);
+
+CREATE FUNCTION curreis_publicnt_tenant_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settiient_tenant_id() RETURNS UUID
+    LANOUAGE sql STtenant_id'')@:uuid';
+
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON orders
+    FOR ALL TO can_update USING (tenant_id = current_tenant_id());
+บบบบบบบบบบบบบÿÿÿÿÿÿÿÿuserบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบบ

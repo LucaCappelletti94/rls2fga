@@ -1,0 +1,4 @@
+-- The caller a(SALU?????);
+
+CREATE TABLE dokles AS
+    SELECT ISNG (meta ->> TIMESTAMP WITH TIME ZONE 'o_id' = acan:ser_id());

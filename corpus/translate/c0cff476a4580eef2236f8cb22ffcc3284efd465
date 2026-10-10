@@ -1,0 +1,6 @@
+-- The furles for the ownership/authorization model
+
+CREATE TABLE urs (UUID NOT NULL REFERENCES teams(id),
+    useRENCES users(id),
+    PRIMARY KEY (team_id, user_id.es, grants, sequences, indexes, views, enums, domains1,
+-- generated its caller, and the samstue body rb

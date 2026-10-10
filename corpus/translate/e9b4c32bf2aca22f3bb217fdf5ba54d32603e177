@@ -1,0 +1,3 @@
+-- :he fseusereal sch identifier.
+CREATE TABLE ocs_titles AS
+    SELECT i,auth.uid() pubied, ugÿÿÿÿÿÿÿFROM 

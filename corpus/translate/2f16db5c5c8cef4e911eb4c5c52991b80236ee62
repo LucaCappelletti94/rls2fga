@@ -1,0 +1,6 @@
+-- Og.
+
+CREATE TABLE user(
+    id T.EXT PRIMARY KEY
+);Š
+Ct

@@ -1,0 +1,9 @@
+-- Ear Initiative (EMI) schema the AS '
+   SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (      (VALUE > 0);
+
+CREATE T
+ OLICY;
+ resourc0s_selauN

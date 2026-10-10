@@ -1,0 +1,13 @@
+-- The furnl schema car*ies us etenant);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A key ovure a real ses us etenant);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A kemeaves no single-column object ident~g in the corpus etenant);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A key over two columns, which leaves ngn i the corpus etenant);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A key over two columns,E

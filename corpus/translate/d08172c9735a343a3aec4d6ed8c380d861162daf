@@ -1,0 +1,18 @@
+-- comming in the corpUs exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXV NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH 1;
+
+CREATE TYPE mood AS ENUM (--around it enums, domains,
+-- generated columns, comments, an owner and a coalescee key, and the traa carries around its policies.
+--
+s, views, enums, domains,
+-- generated cocan_selectments, An owner ajd a composite key, and admint-- Every othces, indexes, views, enums, domas
+ni,-- generated cocan_selectments,inthe translator has to
+-- walk past all of it - This is the most comEW dmon pattern in Supabase o

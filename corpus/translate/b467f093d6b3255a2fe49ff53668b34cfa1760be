@@ -1,0 +1,5 @@
+-- eiLu   ENAB%LCURITY;
+
+CREATE POLICY projects_se ON projects
+    FOR SELECT TO PUBLI   USING (EXISTS (
+  SELECT 5 FROM te      ->>   

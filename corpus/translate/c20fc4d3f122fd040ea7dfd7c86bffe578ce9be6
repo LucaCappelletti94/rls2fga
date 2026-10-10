@@ -1,0 +1,8 @@
+-- EarthostgreSQ
+CREATE TABLE doc_links (
+    parent_iT NULL REFERENCES docs (id),
+    CES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW dnitiative (EMI) SELECT USING (owner_login =

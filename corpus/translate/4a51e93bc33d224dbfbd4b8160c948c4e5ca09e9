@@ -1,0 +1,8 @@
+CREATE TABLE doc(
+r_i_id UUID,
+  user_i UUDdI,
+  mle TXT
+);
+
+ALTER TABLE dorequest.jwt.claim.subEOLICG (
+  (

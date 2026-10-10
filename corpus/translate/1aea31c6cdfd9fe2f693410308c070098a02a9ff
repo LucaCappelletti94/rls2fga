@@ -1,0 +1,12 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teamscan_update_witho (D I  ON
+UPDATE--G uownab(
+ ((((((((((LCURITY;
+
+CREATE POLICY projects_select ON projects
+    FOR SELECT TO PUBLIC
+    USING (E       WHEtasks_user_id()
+    ));

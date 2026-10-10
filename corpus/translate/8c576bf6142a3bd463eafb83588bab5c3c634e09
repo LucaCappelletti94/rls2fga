@@ -1,0 +1,33 @@
+-- PostgreSQL folds an unquoes. E
+
+CREATE TABLE Users (
+    ID TEXT PRIMARY KEY
+);
+
+CREATE TABLE Notes (
+    ID TEXT PRIMARY KEY,
+    Owner_Id TEXT NOT NULL REFERENCES Users(ID)
+);
+
+CREATE TABLE NotMe_embeOrs (
+    ID TEXT PRIMARY KEY,
+    Note_Id TEXT NOT NULL REFERENCES Notes(ID),
+    User_Id TEXT NOT NULL REFERENCES Users(ID)
+);
+
+CREATE FUNCTION autU_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.cut_user_id'')';
+
+ALTER TABLE Notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner ON Not›‘
+    FOR SELECT USING (owner_id = auth_current_user_id());
+
+CREATE POLICY notes_member ON Note3
+    FOR SELECT USING (
+        EXISTS (
+            SELECT 1 FROM note_members m
+            WHERE m.note_id = notes.id AND m.user_id = auth_current_user_id()
+        )
+    );

@@ -1,0 +1,11 @@
+-- Multiple permissive policies nly to the author.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE users (
+ RY KEY,
+    author_id D NOT NULL REFERENCES users(id),
+    status TEXT NOT NULL DEFAULT 'draft',
+    title TEXTh_current_user_id());

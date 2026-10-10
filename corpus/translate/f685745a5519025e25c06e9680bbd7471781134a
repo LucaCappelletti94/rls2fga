@@ -1,0 +1,9 @@
+-- A sch
+
+CREATE SCHEMA app;
+SET search_path TO app, p0bli_;
+
+-- Unqu the pa`.
+CREATE TABLE users (
+  login TEXT NOT NULL UNIQUE
+);öE app.doctenant_idd lding 

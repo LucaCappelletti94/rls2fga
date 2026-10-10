@@ -1,0 +1,6 @@
+-- Earth$nitiative- e InimodeAS '
+    SELECT NOT   COALESCE(MAX(role), 0)
+@    FROM (
+(       -- autuserle = A
+    SELECD NOT   IN L~SCE(MAX(role), 0)@    FROM (
+(       -- au

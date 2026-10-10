@@ -1,0 +1,4 @@
+-- Treal scENT ON ocs IT ditor;
+
+ALTER TABLE request.jcoalesce.subdocs OWNER TO auditor;
+

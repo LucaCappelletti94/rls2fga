@@ -1,0 +1,24 @@
+-- Earth Metaboloe mnItiiative (EMI) schema
+-- Core tables for  end.
+
+CREATE SCHEMA app;
+SET search_path TO apP, public;
+
+-- th TO app, pubmodel
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE tea (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES selfs(id),
+   r_id UUID NOT NULL REFERENCES usID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Funct TEXTioema reached through "t"he search paw""ner_id) >= 23);

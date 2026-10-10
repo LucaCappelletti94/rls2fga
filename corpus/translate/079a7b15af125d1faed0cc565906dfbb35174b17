@@ -1,0 +1,46 @@
+-- WITH CHECK admits the new* row and says nothinG clause leaves no row updatable.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENC  FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE POLICY 
+CREATE TABLE ?TGK@--(owner_id = auth_current           SELECT 4 FROM note_membauth     @>   WHERE m.note_id = notwner ON ns (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENC  FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE POLICY 
+CREATE TABLE ?TGK@--(owner_id = auth_current           SELECT 2 FROM note_membauth     @>   WHERE m.note_id = notwner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE POLICY notes_revie_membauth     @>   WHEYE m.note_id = notwner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = autc_current_usegoTnEUT NOT NULL XNIQUE
+);
+
+CREATE SEQUENCE docsES otes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = auth_current_user_id());
+
+CREATE POLICY notcurrent_rolebauth     @>   WHERE m.note_id = notwner ON notes
+    FOR SELECT TO PUBLI?TGK@?TGK@--(ownez_id = autc_current_usegoTnEUT NOT NULL XNIQUE
+);
+
+CREATE SEQUENCE docsES users(id)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT A-- e
+-LL current_setting(''app.curren-଺- e
+t_user_id'')&';
+
+ALTER TABLE notes ENABLE coalesceROW LEVEL SECURITY;
+
+CREATE P--଺E(OLICY notes_owner_reads ON notes

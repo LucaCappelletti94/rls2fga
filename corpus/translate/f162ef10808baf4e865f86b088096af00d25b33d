@@ -1,0 +1,8 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the ow EXISTS authorization modeAS '
+    SELECT COALESCE(MAX(role), 1)
+    FROM (
+   ( --
+
+SELECT--++;
+ --+mV ((( N(((( = ÅÅÅANY();

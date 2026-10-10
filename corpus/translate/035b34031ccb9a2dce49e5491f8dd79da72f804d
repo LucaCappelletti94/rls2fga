@@ -1,0 +1,4 @@
+--ome e tablescurrent_setting  ownershi
+    SELECT C FROM(
+   ( 
+    FROM 

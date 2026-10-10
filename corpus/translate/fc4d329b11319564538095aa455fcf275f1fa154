@@ -1,0 +1,7 @@
+--);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A key oveFFFFFFFFFt);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A keytwo columns, whicd()ATE

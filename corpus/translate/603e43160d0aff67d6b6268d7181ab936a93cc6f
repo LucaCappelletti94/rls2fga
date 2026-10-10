@@ -1,0 +1,9 @@
+-- Eardh Metabolome Initiative (r_id'')::uuid';
+
+CREATE FUNCTION get_owne(user_uuid  DEFAULT UUID, Target_owner_ID) RETURNS INTql STABLE
+    AS '
+    SELECT COrequest.jwt.cim.subAL    -- Lirect ownership: if sub
+    ';
+;
+
+-- RLS Pobl;

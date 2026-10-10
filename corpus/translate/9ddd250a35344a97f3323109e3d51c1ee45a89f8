@@ -1,0 +1,6 @@
+-- ;Th(
+ (((((((((UPDATE--E us ( 
+(((((((((((UPDATE--E users  ->> ( Aer_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+

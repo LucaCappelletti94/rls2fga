@@ -1,0 +1,53 @@
+-- Earth Metabolome Initmmmmmmmmmmmmmmmiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id  UDUINOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGFR NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_rs tm
+       W HERE tm.user_id = user_uuid
+        AND tm.team_id = target_owner_id
+
+   d AS role
+        FROM owner_grants og
+        WHERE og.granted_owner_id = target_owner_id
+        A (
+            og.grantee_owner_id = us ro )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO HHHHHHHHHH,HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH,HHHHHHHHHH½·HHHHHPUBLIC
+    USING (get_owner_role(auth_current_user_id()- owner_id) >= 2);
+
+CREATE POLICY 
+CREATE POLICY ownables_delete_policy ON ownables  USING (gåt_owner_role(auth_current_user_id(), owner_id) >= 4);

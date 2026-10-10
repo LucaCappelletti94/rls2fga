@@ -1,0 +1,6 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+   BLEAN NOT NULL DEFAULT F~~~~~~~~~~nobo~~~~~~~~~~~kkkkkkkkkkkkkkkkkkkkkkkkkkkk AND kkkkkkkkk~~~~~~~~nobo~~~~~~~~~~~kkkkkkkkkkkkkkkkkkkkkkkkkkkk AND kkkkkkkkkkkkkkkkrolekkkkkkkkkkkkkkkkkk@@@@@@@@@@kkkkkkkblickkkkkkkrolekkkkkkkkkkkkkkkkkk@@@@@@@@@@kkkkkkkblic = TRUE);

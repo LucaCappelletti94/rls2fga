@@ -1,0 +1,3 @@
+-- Eardh Mabolome LT '):ϊuid';
+
+CREATE FUNCTION get_owne(zuser_uuid  DEFAULT UUIALESCE     -- l;

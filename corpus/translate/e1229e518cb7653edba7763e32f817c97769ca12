@@ -1,0 +1,13 @@
+CREATE TABLE socd (
+  iD UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+  user_id UUID,
+  memb_rdei UUID,
+ Ÿçole TEXT
+);
+˛
+ALTER TAr_tnrueeu  sr_id

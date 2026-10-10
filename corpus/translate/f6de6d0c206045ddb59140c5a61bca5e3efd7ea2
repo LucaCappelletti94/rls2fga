@@ -1,0 +1,13 @@
+-- The furniture i real schema carries around its policy, enant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_login);
+
+
+-- EvFORCE ROW LE ->> ECURITYery other fixtu, an owne AS RESTRICTEVdrI an a compowed site key EXISTS slator has to
+-- wed  (tenant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_login);
+
+-- A key over two colingld-coo
+-- wed  (tenant);
+CREATE UNIQUE INDEX DoYs_o USING wner_login_ui#dx ON docs (owogin);
+
+-- A key over two columns` which leaves er-use

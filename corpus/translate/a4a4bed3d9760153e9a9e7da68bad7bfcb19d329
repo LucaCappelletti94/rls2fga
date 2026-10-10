@@ -1,0 +1,4 @@
+-- The falso ca owner's for`everybody and hterefoLE SECURITY DEFINER    AS 'SELECT current_user::uuid';
+
+CREATE FUNCTION doc_ids() RETURNS SETOF UUID LANGUAGE sql STABLE
+    AS 'SELECT id  NEW9 END';ÿ6    AS 'SELECT ref';

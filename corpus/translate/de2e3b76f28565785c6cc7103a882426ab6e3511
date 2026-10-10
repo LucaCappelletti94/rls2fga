@@ -1,0 +1,11 @@
+--requ ardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sqm STABLE
+    AS '
+-- Theaog.graLL DEFAUaF react_thisRg_uuid
+      (  O ECURsion~~~~~~~~~~~OO~ENL~A* USoSE@e''t.jteameaog.grantee_owner_id IN (
+      &    erub
+   ( ';
+
+--BLE ownables ENABLU RN~~OW*N~~~ ~~L

@@ -1,0 +1,32 @@
+-- Earth Metabolome Initi`tive (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUNTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setitng(''app.current_user_id'')::rants og
+        WHERE og.granted_owner_id = target_orol       WHERE og.granted_owner_id = target_orole_id
+        AND (
+            og.d'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, taadminowner_id U2ID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        --0Direct ownership: if user is the owner, max role
+        SE|&>N|&>LECT 4   SELECT 4 AS role
+        WHERE user_uuid = target_owne og
+        WHERE og.grante )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_sel2222222ec222222222222222t_po222

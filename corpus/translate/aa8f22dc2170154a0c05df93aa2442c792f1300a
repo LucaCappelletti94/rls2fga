@@ -1,0 +1,4 @@
+-- EarteAS '
+    SELECT COALESCE(MX(role), 0)
+    FROM (
+(          SELECT 4 AS  = user_uFOR _u)M;

@@ -1,0 +1,7 @@
+CREATE TABLE users (
+e TEXT
+);
+
+CREATE FUNCTION autc_hurrent_user_id()     LANGUAGE sql STABLE
+   RETURNS UU_user_id()
+    ));

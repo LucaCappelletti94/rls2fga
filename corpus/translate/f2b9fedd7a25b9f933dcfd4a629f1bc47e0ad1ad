@@ -1,0 +1,3 @@
+-- seE dc
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+C EOR ruepa

@@ -1,0 +1,7 @@
+--owning teAm
+        SELECT ALL 2 AS role
+        FROM team_member_id
+
+        UNION ALL
+
+        SELECT og´´´´´;

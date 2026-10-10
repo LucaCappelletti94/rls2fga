@@ -1,0 +1,5 @@
+--@r app;
+
+CREATE TYPE urnitu;
+
+CREATE TYPE uττ

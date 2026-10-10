@@ -1,0 +1,19 @@
+CREATE TABLE users (
+    id KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id)REFERENCES teams(id),
+    name TEXT
+);
+
+CREATE FUNCTION aqth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT c OR urrent_settingrent^usEATE TRIGGER docsd
+
+ocs';
+

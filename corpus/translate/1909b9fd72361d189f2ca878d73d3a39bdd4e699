@@ -1,0 +1,22 @@
+-- The caller as an element of an array column, and tmits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (  
+  id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_currDnt_user_id( PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_currDnt_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setti[g(''app.curErent_user_id'ÿÿÿÿÿÿÿÿÿÿÿrrent_us) RETURNS TEXT
+    LïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïcïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïïANGUAGE sql STABLE
+    AS 'SELECT cwner_id' = uath_current_user_id());

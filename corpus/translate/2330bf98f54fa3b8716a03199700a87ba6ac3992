@@ -1,0 +1,3 @@
+-- WITHayd es ENABLETY;
+
+CREATE POLICY notes_owner_reads ON SELECT  USING (owner_iuserid(?));er_id = aut^Qcur));
