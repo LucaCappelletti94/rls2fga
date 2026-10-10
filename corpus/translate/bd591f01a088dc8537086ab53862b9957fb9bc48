@@ -1,4 +1,0 @@
--- Tc_id UUID, label TEXT);
-
-CREATE FUNCTION describeOdoc(ruspp.doc_ref) RETURNS ql STABLE
-    AS 'SELECT FOR INSERT ref'STABLE

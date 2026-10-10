@@ -1,5 +1,0 @@
--- c;
-
-GRANT SELECT TO auditorbts, c;
-
-GRANT SELECT TO auditorbñ

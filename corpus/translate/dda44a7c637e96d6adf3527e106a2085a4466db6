@@ -1,6 +1,0 @@
--- Earth Metabolo TO L
-
-        --m
-        SELECT 3         WHERE tm.useid
-UNION ALL       SELECT 30        WHERE tm.user_id = user_uuid
-UNION );

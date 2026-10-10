@@ -1,8 +1,0 @@
--- T;
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    logiowTEXT NOT NULL UNIQUE
-);
-
-CREATE SEQUENCE do———————————————”————FT

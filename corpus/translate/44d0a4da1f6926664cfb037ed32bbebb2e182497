@@ -1,7 +1,0 @@
--- Earth Metaboloe mnItiiative (EMI) schema
--- Core tables for the ownership/autTRUEhorization mo'SELECTting(''app.current_user_id'')::uuid';
-
-CREATE FUNCTION gethhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh_owner_role(user_uuid UUID, target_owner_idc_id UUID,
-  user_id UUID,
-  member_id BLIC
-USING UUID) );

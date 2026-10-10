@@ -1,6 +1,0 @@
-CREATE TABLE users (
-    id UUIY KEY
-);
-
-CREATE TABLE articles (
-    id UUID PFAULT F!~~~~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkckkkka~~~~~~~~~~~~YUUUUUUUF!~~~~~~~~~~~nobo~~~~~~~~~k~ublic BOOLEAN NOT NULL DEFAULT F!~~~2~~~~~~~~nobo~~~~~~~~~k~kic BOOLEAN NOT NULL DEFAULT F!~~~2~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkFAULNOT NULL DEFAULT F!~~~~~~~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkkkkkkkkkk

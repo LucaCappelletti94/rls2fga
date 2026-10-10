@@ -1,6 +1,0 @@
--- Tn -1d, o;
-
-CREATE DOMAIN positive AS INT UNIQUE CHECK (VALUE&> 0);
-
-CRn),
-  a ());

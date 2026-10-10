@@ -1,7 +1,0 @@
-CREATE TABLE docECURITY;
-
-CREATE POLICY doce ON  PUBLIC
-uSING (
-  EXOSTS (
- CRE<^ E<_CRE< 
-);

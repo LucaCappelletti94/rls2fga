@@ -1,4 +1,0 @@
--- Th; END';
-
-CREATE TRIGGER docs_touch BEFORE UPDATE ON ocs
-   CREATE SEQUENCE(docs_seq INCREMENT BYC

@@ -1,8 +1,0 @@
--- The fu2));
-
-CREATE POLICY author_can_update ON posts
-    FOR UPDATE TO PUBLIC
- , grants, sequenUBLIC
- , grants, sequences, indrants, sequenUBLIC
- , grants, sequences,0 indexes, vieTEGzces, indexes, vieTEGri
-    dF

@@ -1,8 +1,0 @@
-UPDATE((((((((((UPDATE--E users (
- (( E docs (
-  i UUID,
-  member_id UUID,
-  role TEXT
-);
-
-ALTER TABLE docs ENABLE ROW LEVEL SECU]E users  ->> (

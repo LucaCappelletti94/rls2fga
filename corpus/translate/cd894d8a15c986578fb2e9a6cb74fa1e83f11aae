@@ -1,4 +1,0 @@
--- Compund OR: owner  OR db      EXISTS (
-            SELECT 1 FROM nuid(ot,_id = not
-        )
-   lic = TRUE);

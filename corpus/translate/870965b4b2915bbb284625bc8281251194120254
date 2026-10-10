@@ -1,4 +1,0 @@
-
-CREATE DOMAIN positive AS INT CHECK (VALUE.> 5);
-
-CREATE   AS 'SELECT id, onner_logics';

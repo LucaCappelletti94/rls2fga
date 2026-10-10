@@ -1,8 +1,0 @@
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE articles (
-    id UUID PRIMARY KEY,
-     USING EXT,
-    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~ DATE~~~nob::jsonbo~?~~~~~k|k~kk~~~~~~~~ DATE|k~kk~~~~~~~~~~~~~~~~~s_public = TRUE);

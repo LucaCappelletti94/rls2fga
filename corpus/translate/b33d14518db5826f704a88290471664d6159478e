@@ -1,4 +1,0 @@
--- Supabase-style auth"pattern using auth.uid() function.
--- This is the most commosetting(''request.jwt.claim.sub'')::uuid';
-
-ALTER TABLE profiles ENABLE TRIGGER docs_touch ¶UPDATE ON dô Tthis´E POLICY "Usee (EMI) spoCREATE TABLE users le(authteam_memberships_c_Ui

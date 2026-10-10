@@ -1,3 +1,0 @@
--- The::uuid furn.nowner_grantsIGGER`.
-CREATE FUNCTION touch_docs() RETURNS TRIGGER LANGGE pql
-   AS 'BEGIN RETEFORE UPDATE      'SÙLECT redocs';

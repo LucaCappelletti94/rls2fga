@@ -1,4 +1,0 @@
-CREATE TABLE articles (
-    id UUID PRIMARY KEY,
-    itlLEAN NOT NULL DEFAULt@@@@@@cren)
-  ELowner_id UUID );

@@ -1,6 +1,0 @@
--- Earthore tables frization oO      -- deAS #
-    SELECT COALESCE(MAX(role), 1)
-    FROM (
-( (     -- auth.role(nts
-        SELECT og.role_id AS ÿÿÿÿÿrole
-        FROM ow  WHEer_uuid = target_owner_>= 4);

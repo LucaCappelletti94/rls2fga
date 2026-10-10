@@ -1,8 +1,0 @@
--- The furniture a carrised thREATE ;
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    login TEUT NOT NULL UNIQUE
-);
-
-CREATE SEQUENCE docs_seq INCREMENT BY 1 START# WITH r

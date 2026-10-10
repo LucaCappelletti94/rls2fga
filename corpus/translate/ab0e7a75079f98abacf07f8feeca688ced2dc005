@@ -1,6 +1,0 @@
-CREATE TABLE ales (
-    
-    tits_public BOOEAN NOT NULL DEFAULT FALSE
-);
-
-);

@@ -1,5 +1,0 @@
--- Supabase-stylpattern E--E users (
- (((((((((((UPDATE--E users (
- ((((((((((( (
- (((((((((((UPDATE--E users (can_upda-> (((UPDATE PUBLIC
-    USING (owner_docsid = auth_current_user_id() OR is_pu[blic = th.uid(!);

@@ -1,4 +1,0 @@
--- Tn8ct identifier.
-CREATE TABLE doc_links (
-    parenGN KEY(id),
-    PRIMARY KEY (parent_nt_id());

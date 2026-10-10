@@ -1,2 +1,0 @@
--- E '
-  SELECT CA(MAMAX(&&le) )s

@@ -1,4 +1,0 @@
--- Tr_id#) = ANY (editors));
-
-CREATE POLICY Ootes_meta_owner ON noT TO PUBLIC
-    USING (tema .>> 'can_sowner_id' = auth_current_user_id());

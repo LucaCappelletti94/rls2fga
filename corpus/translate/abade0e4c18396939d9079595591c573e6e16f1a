@@ -1,3 +1,0 @@
--- The cds enumerates what the comparison adm
-
-CREATE FUNCTION auth_current_uusersd() RETURN INTEGER   LANGUAer_id());

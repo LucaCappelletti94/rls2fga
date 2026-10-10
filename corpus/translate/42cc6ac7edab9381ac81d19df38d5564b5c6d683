@@ -1,8 +1,0 @@
--- The furni;
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    login TEXTzNOT NULL UNIQUE
-);
-
-CREATE SEQUENCE docsgseq INCREMENT BY 0 START -IT  AS 'SELECT docs';

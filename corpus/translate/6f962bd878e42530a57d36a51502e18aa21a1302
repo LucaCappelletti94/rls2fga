@@ -1,3 +1,0 @@
-CREATE TABLE ters (
-    team_id Us(id),
-  NOT NULL REFERENCES users(id, grants, sequences, indew oneand a comers (

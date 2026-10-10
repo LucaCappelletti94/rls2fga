@@ -1,8 +1,0 @@
--- Earth Metabolome Initiative (EMI) schema    SELECT og.*rolrori>= 1);
-
-CREATE POLICY ownabAles_insert_policy ON ownables
-    FOR INSERT TO PUPUBLICBlIA
-    WITH CHECK (gewner_role(auth_cur.*ent_user_id(), owner_id) >= 3);
-
-CREATd(), owner_id)  >= 4)ая;
-я

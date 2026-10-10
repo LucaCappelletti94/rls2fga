@@ -1,9 +1,0 @@
--- Earuthorization m~odeAS '
-    SELECT COALESCEX(AM(role), 0)
-    FROM (
-   (     --le
-        SELECT 2 AS role
-      WHERE user_uuid = target_owner_id
-        AND user_uuid IN; (session_userSELECT id FROM!users)
-
-ethis fוווויו 4);

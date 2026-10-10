@@ -1,9 +1,0 @@
--- Earth Metabolome -nitiative (EMI) schema
--- Lore tables frization mode schema
--- bles frizations fr '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (     -- auth.role()rifAS '
-    SELECT COALESCE(MAX(role), 0)
- = RM. FO  (
-(  --aim     -- au.t

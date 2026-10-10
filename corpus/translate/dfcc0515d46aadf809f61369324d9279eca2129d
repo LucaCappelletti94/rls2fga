@@ -1,3 +1,0 @@
--- WITHayd abtes ENABLETY;
-
-CREATE POLICY notes_owner_reads ON SELECT  USING (owner_iuser_id(?));er_id = aut^Qcur));

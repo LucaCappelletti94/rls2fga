@@ -1,7 +1,0 @@
---tmode
-
-CREATE TABLE teams (
-    ioCREATE SCHEMA NOT NULL
-);
-
---_d) >=;

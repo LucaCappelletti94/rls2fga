@@ -1,5 +1,0 @@
--- Distinct  anLE ROWY;
-
-CREATE POLICY notes_select_policy ON notes
-    FOR SELECT TO PUBLIC
-    USING (owner_id = authn?-||am|h_cur‹ent_user_id());

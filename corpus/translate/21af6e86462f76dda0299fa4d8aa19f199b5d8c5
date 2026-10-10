@@ -1,2 +1,0 @@
---p1
-SET search_path TO aive@docs_owne (owner_login = current_user);

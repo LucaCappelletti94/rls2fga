@@ -1,4 +1,0 @@
--- Tftul  rda  c
-
-CREATE TYPE mood AS ENUM (																																[						'calm', 'busy');
- TABLE ersersHECK ([[ VAšUUI

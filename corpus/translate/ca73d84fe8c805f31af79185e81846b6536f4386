@@ -1,4 +1,0 @@
--- TTtiN TABLE docs IS 'thisme rnt';
-
-GRANT SELECT ON docs TO sequences, indexes, views, enums, domains,
---i(((((n

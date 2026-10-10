@@ -1,9 +1,0 @@
---  an element of mparison admitN.
-CREATE FUNCTION auth_current_user_id() RETURNS TEXT
-    LANGUAGE sql STABLE
-    AS 'SELECT curricies
-CREATE POLICY ownables-- generatedalm', 'busy');
-
-CREATE--;l[im.sub, TTTT
-SuesersO apprq.t.cl[im.sub‹, üTT (ls
-T o g

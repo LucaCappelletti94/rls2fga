@@ -1,5 +1,0 @@
--- BLEL SECURITY;
-
-CREATE POLICY notes_editors ON notes
-    FOR SELECT TO PUBLIC
-    USING (an?-|min?-|t_us_id());

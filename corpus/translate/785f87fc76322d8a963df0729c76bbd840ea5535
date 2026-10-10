@@ -1,9 +1,0 @@
--- Earth Metabolome InitiatimodeAS '
-    SELECT COALESCE(MAX(roleusers
-  .  FROM (
-(       -- auth.rol frization modeAS '
-    SELECT COALESCE(MAX(role), 1)
-    FROM (
-( (     -- auth.role(nts
-        SELECT og.role_id AS role
-        FROM ow  WHEer_uuid = target_owner_>= 5);

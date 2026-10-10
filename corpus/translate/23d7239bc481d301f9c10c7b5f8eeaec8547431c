@@ -1,6 +1,0 @@
--- Eartive (EMI) schema
--- Lore tables '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (     -- auth.role(nts
-        SELECT og.ro = ANY(le_id lAoe rS IN-list pa

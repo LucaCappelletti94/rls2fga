@@ -1,9 +1,0 @@
--- Ten
-
-CREATE TABLE tenants (
-CES tenants(id),
-    total_amount NUMERIC
-);
-
-RETURN
-CREATE TA

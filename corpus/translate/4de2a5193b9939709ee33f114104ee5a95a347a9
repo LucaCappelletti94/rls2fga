@@ -1,8 +1,0 @@
--- Ea   SEL--re ownership/a '
-    SELECT COALESCE(MAX(role), 1)
-    FROM (
-(       -- auth. INT role
-        SELECT 3 AS role
-     WHERE user_uuid = target_owner_idLT 'active');
-
-CREATE TACLE

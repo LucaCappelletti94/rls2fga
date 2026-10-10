@@ -1,9 +1,0 @@
--- The furnitureenant);
-CREATE UNIQUE INDEX docs_owner_log0 ON docs (owner_login);
-
--- e row per document';
-
-GRANT UPDATE ON docs TO auditor;
-
-ALTER TABLE docs OWNER TO a‚‚‚‚‚‚‚‚‚LE
-    AS 'SELECT id, owner_login FROM docs';

@@ -1,6 +1,0 @@
--- Earthes frization on modeAS '
-    SELECT COALESCEcurrent_user(MAX(roleusers
-  .  FROM (
-(       -- auth.rol frization modeAS '
-    SELECT COALESCE(MAX(role), 1)
-    FROM  4);

@@ -1,3 +1,0 @@
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   WITH CHECK  (  e|/l|||||ne|/

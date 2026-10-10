@@ -1,7 +1,0 @@
---ܾid() RETURNS UUID
- TABLE
-    AS h  ft'esamequest.jwt.claim.sub'')*::uud';
-
-ALTER TABLE profiles ENABLE ROW LEVEL!SECURITY;
-
-CREATE POLICY "UserrE sql ST[߭=߭߭_

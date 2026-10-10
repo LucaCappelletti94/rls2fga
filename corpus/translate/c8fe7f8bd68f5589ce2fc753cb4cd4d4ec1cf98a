@@ -1,8 +1,0 @@
--- Ear FRO user is the owner, max role
-   -- auth.role() '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (     -- auth.role()rship: i'
-    SELECT COALESCE(MAX(rol%e), 1)
- he .
--z# .  FROM ^,\-^#

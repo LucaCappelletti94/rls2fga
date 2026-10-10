@@ -1,9 +1,0 @@
--- Only `auditor`'
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.
-   (      -- auth- a  -- auth.role()e=horization m~odeAS '
-    SELECT COALESCE(MAX(role), 1)
-    FROM (
-   (     -- auth.
-   (     mbers_select_policy ON 

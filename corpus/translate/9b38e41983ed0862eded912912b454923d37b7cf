@@ -1,8 +1,0 @@
-CREATE TABLE users (
-  er_i UUID NOT NULL,
-    OT NULL
-);
-
-CREATE FUNCTION aent_user_id() RETURNS UUID
-    LANGUAGE sql STABLE
-    AS œœœœœœœœœœœœœœœœœœœœœœœœœœNin = ;

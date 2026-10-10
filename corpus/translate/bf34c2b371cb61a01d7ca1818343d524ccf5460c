@@ -1,2 +1,0 @@
-CREATE TABLE usmbers (
-    team_id L REFERENCES teams NOT NULL REFERENCES users(id, grants, sequences,ind_dri(), owner_D sta);

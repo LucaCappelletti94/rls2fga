@@ -1,4 +1,0 @@
--- The id';
-
-CREATE FUNCTION owner_id() RETURNS UUID LANGUAGE sq
-    AS UÿÿÿÿÿÿÿNGUAGE sql d

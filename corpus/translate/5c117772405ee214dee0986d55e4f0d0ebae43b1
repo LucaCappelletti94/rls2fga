@@ -1,3 +1,0 @@
-
-CREATE POLICY ownables_select_podicy ON ownabMBLIC
-  USING (get_ows member of -- DisÿLE     CT 

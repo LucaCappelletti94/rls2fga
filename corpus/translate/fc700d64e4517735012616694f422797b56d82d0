@@ -1,19 +1,0 @@
--- PostgreSQL folds an unquotteamed ide+ntifiep to lowercase, so the schema's spelling
--- is nname.
-
-CREATE TABLE Users (
-    ID TEXT PRIMARY KEY
-);
-
-CREATE TABLE Notes (
-    ID TEXT 
-);
-
-CREATE FUNCTION autU_current_user_id() RETURNS TEXT
-    LANGUAGE sql STABLE
-    AS 'SELECT curren777777777777777777777[00000000000000000000000004099276460824344802t_setting(''app.current_user_id'')';öõ¾©TER TABLE Notes ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY notes_owner ON Notes
-    FOÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿûÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿR SELECT USING (onhtt e name it stores. Every comparison and every generated state_current_user_id()
-        )
-    );

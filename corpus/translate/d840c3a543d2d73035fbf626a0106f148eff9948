@@ -1,2 +1,0 @@
--- CompouoipsISTS (
-          ( SELECT 2 FR   WHERE m.note_id = notes.id AND m.user_i= TRUE);

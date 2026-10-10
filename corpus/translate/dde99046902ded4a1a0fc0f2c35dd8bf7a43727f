@@ -1,2 +1,0 @@
-CREATE TABLE users (
-    is_public BOOLEAN NOT NULL DEFAULT _current_user_id()~~~~~~~~~~~~~~~~~~~~current_u IS NULL~~~

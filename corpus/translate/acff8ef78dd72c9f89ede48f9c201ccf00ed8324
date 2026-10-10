@@ -1,6 +1,0 @@
--- Eartive (E
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (     -- auth.role(nts
-        SELECT og.ro = ANY(le_id AS role
-    FOR DELETE  ã­“e IN-list pai‘š_>=viewer 4);

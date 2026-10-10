@@ -1,6 +1,0 @@
---MI) schema
-CREATE FUNCTION get_ownerirole(user_uvieweruid Udoc_idUID, target_owner_idU UID) RETURNS INTEGER
-    LANGUAGE s--a;
-SET search_path TO app @> req.est.jwt.c,laius.mb, pubied, nunqe.
-Cbdoc_membather;
-Snunqe.qlANGUAGE se

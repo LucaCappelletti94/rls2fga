@@ -1,5 +1,0 @@
--- The furniture a r;
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    login NT GENERATED ALWAYS AS (È lologin F;OMcs';

@@ -1,9 +1,0 @@
--- Earth Metabolome Initiatiam
-        SELECT 2 AS role
-        FROM team_member(
-( (     -- auth.r ifAS '
-    SELECT COALESCE(MAX(role), 0)
-  .  FROM (
-(       --current_useles
-    FOR UPDATE TO PUBLIC
-    USINGner_role(auth_curren));
