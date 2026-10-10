@@ -3,6 +3,7 @@
 //! client-side in WebAssembly.
 
 mod examples;
+mod settings;
 
 use anyhow::{Context, Result};
 use dioxus::html::FileData;
@@ -17,11 +18,10 @@ use dioxus_free_icons::icons::fa_solid_icons::{
 };
 use dioxus_free_icons::Icon;
 
-use rls2fga::types::ConfidenceLevel;
-use rls2fga::types::{NoteSeverity, TranslationNote};
 use rls2fga::generator::tuple_generator::format_tuples;
 use rls2fga::parser::sql_parser::parse_schema;
-use rls2fga::translator::TranslatorBuilder;
+use rls2fga::types::ConfidenceLevel;
+use rls2fga::types::{NoteSeverity, TranslationNote};
 
 use crate::examples::{ExampleIcon, EXAMPLES};
 
@@ -97,7 +97,7 @@ struct Rendered {
 /// is needed.
 fn translate(sql: &str, level: ConfidenceLevel) -> Result<Rendered> {
     let db = parse_schema(sql).context("parsing the SQL schema")?;
-    let translator = TranslatorBuilder::new().with_min_confidence(level).build();
+    let translator = settings::translator(level).context("loading the app's function registry")?;
     let translation = translator
         .translate(&db)
         .context("planning the authorization model")?;
