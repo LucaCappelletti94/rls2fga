@@ -1,3 +1,4 @@
+use core::fmt::Write as _;
 use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use rls2fga::classifier::patterns::{MembershipExclusion, PatternClass};
 use rls2fga::parser::sql_parser::parse_schema;
@@ -366,6 +367,243 @@ fn a_restrictive_exclusion_past_the_classifier_depth_bound_refuses() {
     assert_eq!(
         blocks.confidence,
         ConfidenceLevel::D,
+        "{:?}",
+        blocks.pattern
+    );
+}
+
+#[test]
+fn a_restrictive_exclusion_at_exactly_the_left_chain_depth_bound_still_classifies() {
+    let trailing_true = " AND TRUE".repeat(64);
+    let sql = format!(
+        "{TABLES}
+         CREATE POLICY docs_read ON docs FOR SELECT USING ({SHARED});
+         CREATE POLICY docs_blocks ON docs AS RESTRICTIVE FOR SELECT
+             USING (NOT {BLOCKED}{trailing_true});"
+    );
+    let db = parse_schema(&sql).expect("schema parses");
+    let classified = translator().classify(&db);
+    let blocks = classified
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("classifies");
+    assert!(
+        matches!(
+            &blocks.pattern,
+            PatternClass::MembershipExclusion(MembershipExclusion { base: Some(_), .. })
+        ),
+        "{:?}",
+        blocks.pattern
+    );
+}
+
+#[test]
+fn a_restrictive_exclusion_one_past_the_left_chain_depth_bound_refuses() {
+    let trailing_true = " AND TRUE".repeat(65);
+    let sql = format!(
+        "{TABLES}
+         CREATE POLICY docs_read ON docs FOR SELECT USING ({SHARED});
+         CREATE POLICY docs_blocks ON docs AS RESTRICTIVE FOR SELECT
+             USING (NOT {BLOCKED}{trailing_true});"
+    );
+    let db = parse_schema(&sql).expect("schema parses");
+    let classified = translator().classify(&db);
+    let blocks = classified
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("classifies");
+    assert_eq!(
+        blocks.confidence,
+        ConfidenceLevel::D,
+        "{:?}",
+        blocks.pattern
+    );
+}
+
+#[test]
+fn a_restrictive_exclusion_past_the_nested_chain_depth_bound_refuses() {
+    let trailing_true = " AND TRUE".repeat(64);
+    let sql = format!(
+        "{TABLES}
+         CREATE POLICY docs_read ON docs FOR SELECT USING ({SHARED});
+         CREATE POLICY docs_blocks ON docs AS RESTRICTIVE FOR SELECT
+             USING ((NOT {BLOCKED}){trailing_true});"
+    );
+    let db = parse_schema(&sql).expect("schema parses");
+    let classified = translator().classify(&db);
+    let blocks = classified
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("classifies");
+    assert_eq!(
+        blocks.confidence,
+        ConfidenceLevel::D,
+        "{:?}",
+        blocks.pattern
+    );
+}
+
+#[test]
+fn a_restrictive_exclusion_past_the_is_true_chain_depth_bound_refuses() {
+    let mut clause = format!("NOT {BLOCKED}");
+    for _ in 0..65 {
+        clause = format!("{clause} IS TRUE");
+    }
+    let sql = format!(
+        "{TABLES}
+         CREATE POLICY docs_read ON docs FOR SELECT USING ({SHARED});
+         CREATE POLICY docs_blocks ON docs AS RESTRICTIVE FOR SELECT USING ({clause});"
+    );
+    let db = parse_schema(&sql).expect("schema parses");
+    let classified = translator().classify(&db);
+    let blocks = classified
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("classifies");
+    assert_eq!(
+        blocks.confidence,
+        ConfidenceLevel::D,
+        "{:?}",
+        blocks.pattern
+    );
+}
+
+#[test]
+fn a_restrictive_exclusion_past_the_and_right_chain_depth_bound_refuses() {
+    let blocked_escaped = BLOCKED.replace("docs.id", "d").replace('\'', "''");
+    let mut functions = format!(
+        "CREATE FUNCTION rchain_0(d TEXT) RETURNS boolean LANGUAGE sql STABLE
+         SET search_path TO public, pg_catalog, pg_temp
+         AS 'SELECT NOT {blocked_escaped}';"
+    );
+    for level in 1..20 {
+        let previous = level - 1;
+        let _ = write!(
+            functions,
+            "CREATE FUNCTION rchain_{level}(d TEXT) RETURNS boolean LANGUAGE sql STABLE
+             AS 'SELECT TRUE AND rchain_{previous}(d)';"
+        );
+    }
+    let trailing_true = " AND TRUE".repeat(30);
+    let sql = format!(
+        "{TABLES} {functions}
+         CREATE POLICY docs_read ON docs FOR SELECT USING ({SHARED});
+         CREATE POLICY docs_blocks ON docs AS RESTRICTIVE FOR SELECT
+             USING (rchain_19(id){trailing_true});"
+    );
+    let db = parse_schema(&sql).expect("schema parses");
+    let classified = translator().classify(&db);
+    let blocks = classified
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("classifies");
+    assert_eq!(
+        blocks.confidence,
+        ConfidenceLevel::D,
+        "{:?}",
+        blocks.pattern
+    );
+}
+
+#[test]
+fn a_restrictive_exclusion_past_the_function_chain_depth_bound_refuses() {
+    let blocked_escaped = BLOCKED.replace("docs.id", "d").replace('\'', "''");
+    let mut functions = format!(
+        "CREATE FUNCTION chain_0(d TEXT) RETURNS boolean LANGUAGE sql STABLE
+         SET search_path TO public, pg_catalog, pg_temp
+         AS 'SELECT NOT {blocked_escaped}';"
+    );
+    for level in 1..70 {
+        let previous = level - 1;
+        let _ = write!(
+            functions,
+            "CREATE FUNCTION chain_{level}(d TEXT) RETURNS boolean LANGUAGE sql STABLE
+             AS 'SELECT chain_{previous}(d)';"
+        );
+    }
+    let sql = format!(
+        "{TABLES} {functions}
+         CREATE POLICY docs_read ON docs FOR SELECT USING ({SHARED});
+         CREATE POLICY docs_blocks ON docs AS RESTRICTIVE FOR SELECT USING (chain_69(id));"
+    );
+    let db = parse_schema(&sql).expect("schema parses");
+    let classified = translator().classify(&db);
+    let blocks = classified
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("classifies");
+    assert_eq!(
+        blocks.confidence,
+        ConfidenceLevel::D,
+        "{:?}",
+        blocks.pattern
+    );
+}
+
+#[test]
+fn a_restrictive_exclusion_past_the_function_chain_depth_bound_within_budget_refuses() {
+    let blocked_escaped = BLOCKED.replace("docs.id", "d").replace('\'', "''");
+    let mut functions = format!(
+        "CREATE FUNCTION fchain_0(d TEXT) RETURNS boolean LANGUAGE sql STABLE
+         SET search_path TO public, pg_catalog, pg_temp
+         AS 'SELECT NOT {blocked_escaped}';"
+    );
+    for level in 1..20 {
+        let previous = level - 1;
+        let _ = write!(
+            functions,
+            "CREATE FUNCTION fchain_{level}(d TEXT) RETURNS boolean LANGUAGE sql STABLE
+             AS 'SELECT fchain_{previous}(d)';"
+        );
+    }
+    let trailing_true = " AND TRUE".repeat(45);
+    let sql = format!(
+        "{TABLES} {functions}
+         CREATE POLICY docs_read ON docs FOR SELECT USING ({SHARED});
+         CREATE POLICY docs_blocks ON docs AS RESTRICTIVE FOR SELECT
+             USING (fchain_19(id){trailing_true});"
+    );
+    let db = parse_schema(&sql).expect("schema parses");
+    let classified = translator().classify(&db);
+    let blocks = classified
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("classifies");
+    assert_eq!(
+        blocks.confidence,
+        ConfidenceLevel::D,
+        "{:?}",
+        blocks.pattern
+    );
+}
+
+#[test]
+fn an_is_true_wrapped_conjunct_outside_the_restrictive_top_stays_opaque() {
+    let sql = format!(
+        "{TABLES}
+         CREATE POLICY docs_blocks ON docs FOR SELECT
+             USING (NOT {BLOCKED} AND ((NOT {BLOCKED}) IS TRUE));"
+    );
+    let db = parse_schema(&sql).expect("schema parses");
+    let classified = translator().classify(&db);
+    let blocks = classified
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("classifies");
+    assert!(
+        matches!(
+            &blocks.pattern,
+            PatternClass::MembershipExclusion(MembershipExclusion { base: Some(_), subtract })
+                if subtract.len() == 1
+        ),
         "{:?}",
         blocks.pattern
     );
