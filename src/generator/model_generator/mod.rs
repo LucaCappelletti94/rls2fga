@@ -295,9 +295,9 @@ pub(crate) struct TypePlan {
     pub table_tuple_sources: Vec<TupleSource>,
     /// Ownership column → its relation. Sharing one would union distinct principals.
     ownership_relations: BTreeMap<String, RelationName>,
-    /// Wildcard gate predicate key → its relation. A predicate's tuples satisfy only
-    /// its own relation, so two keys must never share a name even on hash collision.
-    wildcard_gate_relations: BTreeMap<String, RelationName>,
+    /// Gate key → its relation. A gate's tuples satisfy only its own relation, so two
+    /// keys must never share a name even on hash collision.
+    gate_relations: BTreeMap<String, RelationName>,
     membership_source_relations: BTreeMap<String, RelationName>,
     /// Conditions this type's own relation references name, keyed by condition name.
     /// They live here rather than threaded through translation so a condition stays
@@ -369,7 +369,7 @@ impl TypePlan {
             well_known: well_known.clone(),
             table_tuple_sources: Vec::new(),
             ownership_relations: BTreeMap::new(),
-            wildcard_gate_relations: BTreeMap::new(),
+            gate_relations: BTreeMap::new(),
             membership_source_relations: BTreeMap::new(),
             conditions: BTreeMap::new(),
             reads_only_its_own_rows: false,
@@ -434,13 +434,18 @@ impl TypePlan {
         relation
     }
 
-    /// Relation carrying one wildcard gate's subjects, keyed by the gate's predicate.
+    /// Relation carrying one gate's `subjects`, keyed by what the gate tests.
     ///
     /// A memo hit shares the relation. A miss never adopts a name any other
-    /// definition holds, whatever its subjects, or two predicates' tuple sets would
-    /// union under one gate.
-    fn wildcard_gate_relation(&mut self, memo_key: &str, base: impl Into<String>) -> RelationName {
-        if let Some(existing) = self.wildcard_gate_relations.get(memo_key) {
+    /// definition holds, whatever its subjects, or two gates' tuple sets would
+    /// union under one relation.
+    fn gate_relation(
+        &mut self,
+        memo_key: &str,
+        base: impl Into<String>,
+        subjects: Vec<DirectSubject>,
+    ) -> RelationName {
+        if let Some(existing) = self.gate_relations.get(memo_key) {
             return existing.clone();
         }
         let base = clamp_relation_name(base.into());
@@ -464,11 +469,10 @@ impl TypePlan {
                 .collect();
             relation = RelationName::canonicalized(format!("{head}{suffix}"));
         }
-        let wildcard = vec![DirectSubject::Wildcard(self.well_known.user.clone())];
         self.direct_relations
             .entry(relation.clone())
-            .or_insert(wildcard);
-        self.wildcard_gate_relations
+            .or_insert(subjects);
+        self.gate_relations
             .insert(memo_key.to_string(), relation.clone());
         relation
     }

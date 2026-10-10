@@ -9,7 +9,7 @@ use rls2fga::types::ConfidenceLevel;
 
 mod support;
 
-use support::footgun::{db_of, gated_tables};
+use support::footgun::{db_of, defines_in_type, gated_tables};
 
 fn outputs_of(sql: &str) -> Outputs {
     TranslatorBuilder::new()
@@ -53,4 +53,34 @@ CREATE POLICY {name}_live ON {name} FOR SELECT USING (expires_at > now());
     };
     let dsl = outputs_of(&format!("{}{}", table("offers"), table("coupons"))).model();
     assert_eq!(condition_count(&dsl), 1, "{dsl}");
+}
+
+/// Policy `a_b` testing `c` and policy `a` testing `b_c` spell their gates alike, yet each
+/// constant's tuples may satisfy only its own gate, or a caller holding one passes both.
+#[test]
+fn gates_on_constants_that_spell_alike_stay_apart() {
+    let gate = |policy: &str, value: &str| {
+        format!(
+            "CREATE POLICY {policy} ON docs AS RESTRICTIVE FOR SELECT USING \
+             ('{value}' = ANY(string_to_array(current_setting('app.bot_list', true), ',')));\n"
+        )
+    };
+    let sql = format!(
+        "CREATE TABLE docs (id TEXT PRIMARY KEY, owner TEXT NOT NULL);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY own ON docs FOR ALL USING (owner = current_setting('app.user_id', true));
+{}{}",
+        gate("a_b", "c"),
+        gate("a", "b_c"),
+    );
+    let dsl = outputs_of(&sql).model();
+    let (_, can_select) = defines_in_type(&dsl, "docs")
+        .into_iter()
+        .find(|(name, _)| *name == "can_select")
+        .expect("docs defines can_select");
+    let gates: std::collections::BTreeSet<&str> = can_select
+        .split_whitespace()
+        .filter(|token| token.starts_with("gate_"))
+        .collect();
+    assert_eq!(gates.len(), 2, "{dsl}");
 }

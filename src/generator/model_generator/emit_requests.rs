@@ -81,12 +81,18 @@ pub(crate) fn session_attribute_expr<DB: DatabaseLike>(
         RowParameterSource::Column(_) => policy_name.to_string(),
         RowParameterSource::Constant(value) => format!("{policy_name}_{value}"),
     };
-    let relation = table_plan.ensure_direct(
+    let memo_key = format!(
+        "session:{}:{policy_name}:{condition}:{row_parameter:?}",
+        policy_name.len()
+    );
+    let subjects = vec![DirectSubject::ConditionalWildcard {
+        type_name: table_plan.well_known.user.clone(),
+        condition: condition.clone(),
+    }];
+    let relation = table_plan.gate_relation(
+        &memo_key,
         conditional_gate_relation_name(&relation_key),
-        vec![DirectSubject::ConditionalWildcard {
-            type_name: table_plan.well_known.user.clone(),
-            condition: condition.clone(),
-        }],
+        subjects,
     );
     table_plan.add_source(TupleSource::SessionAttributeGate {
         table: source_table.clone(),
@@ -184,12 +190,19 @@ pub(crate) fn conditional_gate_expr<DB: DatabaseLike>(
         },
     );
 
-    let relation = table_plan.ensure_direct(
+    let memo_key = format!(
+        "clock:{}:{policy_name}:{condition}:{:?}",
+        policy_name.len(),
+        request.column
+    );
+    let subjects = vec![DirectSubject::ConditionalWildcard {
+        type_name: table_plan.well_known.user.clone(),
+        condition: condition.clone(),
+    }];
+    let relation = table_plan.gate_relation(
+        &memo_key,
         conditional_gate_relation_name(policy_name),
-        vec![DirectSubject::ConditionalWildcard {
-            type_name: table_plan.well_known.user.clone(),
-            condition: condition.clone(),
-        }],
+        subjects,
     );
     table_plan.add_source(TupleSource::ConditionalAttributeGate {
         table: source_table.clone(),

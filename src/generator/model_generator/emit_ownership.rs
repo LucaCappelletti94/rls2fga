@@ -89,9 +89,11 @@ pub(crate) fn emit_boolean_flag<DB: DatabaseLike>(
         skip_source_without_row_identity(table_plan, source_table, "public-flag tuples", db);
         return deny_expr(table_plan);
     };
-    let relation = table_plan.wildcard_gate_relation(
+    let wildcard = vec![DirectSubject::Wildcard(table_plan.well_known.user.clone())];
+    let relation = table_plan.gate_relation(
         &flag_gate_key(column),
         public_flag_relation_name(column.as_str()),
+        wildcard,
     );
     table_plan.add_source(TupleSource::PublicFlag {
         table: source_table.clone(),
@@ -182,9 +184,11 @@ pub(crate) fn emit_attribute_condition<DB: DatabaseLike>(
                 );
                 return deny_expr(table_plan);
             };
-            let relation = table_plan.wildcard_gate_relation(
+            let wildcard = vec![DirectSubject::Wildcard(table_plan.well_known.user.clone())];
+            let relation = table_plan.gate_relation(
                 &key,
                 attribute_gate_relation_name(predicate.column.as_str(), &key),
+                wildcard,
             );
             table_plan.add_source(TupleSource::AttributeGate {
                 table: source_table.clone(),
