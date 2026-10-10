@@ -3,6 +3,8 @@
 //! The gate has the same truth value for every row, so neither the conditions the
 //! model declares nor the tuples a row carries may grow with what it does not read.
 
+use core::fmt::Write as _;
+
 use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
 use rls2fga::generator::well_known::WellKnownTypes;
 use rls2fga::translator::{Outputs, TranslatorBuilder};
@@ -120,24 +122,42 @@ CREATE POLICY {name}_live ON {name} FOR SELECT USING (expires_at > now());
     assert_eq!(condition_count(&dsl), 1, "{dsl}");
 }
 
+/// `docs`, read by its owner and gated by one restrictive policy per `(policy, value)`,
+/// each requiring `value` in the caller's list.
+fn docs_gated_on(gates: &[(&str, &str)]) -> String {
+    let mut sql = String::from(
+        "CREATE TABLE docs (id TEXT PRIMARY KEY, owner TEXT NOT NULL);
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY own ON docs FOR ALL USING (owner = current_setting('app.user_id', true));
+",
+    );
+    for (policy, value) in gates {
+        writeln!(
+            sql,
+            "CREATE POLICY {policy} ON docs AS RESTRICTIVE FOR SELECT USING \
+             ('{value}' = ANY(string_to_array(current_setting('app.bot_list', true), ',')));"
+        )
+        .expect("a String takes any write");
+    }
+    sql
+}
+
 /// Policy `a_b` testing `c` and policy `a` testing `b_c` spell their gates alike, yet each
 /// constant's tuples may satisfy only its own gate, or a caller holding one passes both.
 #[test]
 fn gates_on_constants_that_spell_alike_stay_apart() {
-    let gate = |policy: &str, value: &str| {
-        format!(
-            "CREATE POLICY {policy} ON docs AS RESTRICTIVE FOR SELECT USING \
-             ('{value}' = ANY(string_to_array(current_setting('app.bot_list', true), ',')));\n"
-        )
-    };
-    let sql = format!(
-        "CREATE TABLE docs (id TEXT PRIMARY KEY, owner TEXT NOT NULL);
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY own ON docs FOR ALL USING (owner = current_setting('app.user_id', true));
-{}{}",
-        gate("a_b", "c"),
-        gate("a", "b_c"),
-    );
+    let dsl = outputs_of(&docs_gated_on(&[("a_b", "c"), ("a", "b_c")])).model();
+    assert_eq!(defines_in_type(&dsl, "request_gate").len(), 2, "{dsl}");
+}
+
+/// These two constants fold to one readable name and share its 32-bit suffix, yet each
+/// atom's tuple may satisfy only its own relation.
+#[test]
+fn atoms_whose_names_collide_stay_apart() {
+    let sql = docs_gated_on(&[
+        ("upper", "ABCDEFghiJkLmnopqrst"),
+        ("lower", "AbCDEfghijkLmnoPqrst"),
+    ]);
     let dsl = outputs_of(&sql).model();
     assert_eq!(defines_in_type(&dsl, "request_gate").len(), 2, "{dsl}");
 }

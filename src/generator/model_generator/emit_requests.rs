@@ -212,15 +212,18 @@ impl GateObject<'_> {
                     RequestComparison::CallerSetHolds => "holds",
                     RequestComparison::CallerValueEquals => "is",
                 };
-                let relation = self.plan.ensure_direct(
+                let subjects = vec![DirectSubject::ConditionalWildcard {
+                    type_name: self.plan.well_known.user.clone(),
+                    condition: condition.clone(),
+                }];
+                let key = formula.key();
+                let relation = self.plan.gate_relation(
+                    &format!("request:{key}"),
                     request_gate_relation_name(
                         &format!("{}_{verb}_{}", atom.request_parameter, atom.value),
-                        &formula.key(),
+                        &key,
                     ),
-                    vec![DirectSubject::ConditionalWildcard {
-                        type_name: self.plan.well_known.user.clone(),
-                        condition: condition.clone(),
-                    }],
+                    subjects,
                 );
                 self.entries.push(TupleSource::RequestGateEntry {
                     gate_type: self.plan.type_name.clone(),
