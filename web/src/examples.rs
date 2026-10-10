@@ -1,6 +1,5 @@
 //! Curated example schemas shown as pills, one per documented RLS pattern, so a
-//! visitor can load a real schema in one click and exercise every confidence
-//! tier and the TODO panel.
+//! visitor can load a real schema in one click.
 
 /// Which Font Awesome glyph a pill shows. The concrete `Icon` is resolved in
 /// `main.rs`, which owns the `dioxus-free-icons` dependency.
@@ -18,7 +17,7 @@ pub enum ExampleIcon {
     RoleList,
     /// Combined patterns.
     Composite,
-    /// Attribute condition (partially recognised, confidence C).
+    /// Attribute condition, decided row by row.
     Attribute,
 }
 
@@ -50,17 +49,16 @@ const PARENT: &str = "CREATE TABLE users (id UUID PRIMARY KEY);\nCREATE TABLE pr
 const PUBLIC_FLAG: &str = "CREATE TABLE users (\n    id UUID PRIMARY KEY\n);\n\nCREATE TABLE articles (\n    id UUID PRIMARY KEY,\n    title TEXT,\n    is_public BOOLEAN NOT NULL DEFAULT FALSE\n);\n\nALTER TABLE articles ENABLE ROW LEVEL SECURITY;\n\nCREATE POLICY articles_select ON articles\n    FOR SELECT TO PUBLIC\n    USING (is_public = TRUE);\n";
 
 /// Role threshold (P2): a function returns a role level checked against a list
-/// of allowed values.
-const ROLE_LIST: &str = "CREATE TABLE users (\n    id UUID PRIMARY KEY\n);\n\nCREATE TABLE ownables (\n    id UUID PRIMARY KEY,\n    owner_id UUID NOT NULL\n);\n\nCREATE FUNCTION auth_current_user_id() RETURNS UUID\n    LANGUAGE sql STABLE\n    AS 'SELECT current_setting(''app.current_user_id'')::uuid';\n\nCREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER\n    LANGUAGE sql STABLE\n    AS 'SELECT 0';\n\nALTER TABLE ownables ENABLE ROW LEVEL SECURITY;\n\nCREATE POLICY ownables_read ON ownables\n    FOR SELECT TO PUBLIC\n    USING (get_owner_role(auth_current_user_id(), owner_id) IN (2, 3, 4));\n";
+/// of allowed values, read from the grant and team tables the app's registry names.
+const ROLE_LIST: &str = "CREATE TABLE users (\n    id UUID PRIMARY KEY\n);\n\nCREATE TABLE teams (\n    id UUID PRIMARY KEY\n);\n\nCREATE TABLE team_members (\n    team_id UUID NOT NULL REFERENCES teams(id),\n    user_id UUID NOT NULL REFERENCES users(id)\n);\n\nCREATE TABLE ownables (\n    id UUID PRIMARY KEY,\n    owner_id UUID NOT NULL\n);\n\nCREATE TABLE owner_grants (\n    grantee_owner_id UUID NOT NULL,\n    granted_owner_id UUID NOT NULL,\n    role_id INTEGER NOT NULL\n);\n\nCREATE FUNCTION auth_current_user_id() RETURNS UUID\n    LANGUAGE sql STABLE\n    AS 'SELECT current_setting(''app.current_user_id'')::uuid';\n\nCREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER\n    LANGUAGE sql STABLE\n    AS 'SELECT 0';\n\nALTER TABLE ownables ENABLE ROW LEVEL SECURITY;\n\nCREATE POLICY ownables_read ON ownables\n    FOR SELECT TO PUBLIC\n    USING (get_owner_role(auth_current_user_id(), owner_id) IN (2, 3, 4));\n";
 
 /// Composite OR (P8): owner access OR the public flag, combining two patterns in
 /// one policy so the confidence summary and TODO panel light up.
 const COMPOSITE: &str = "-- Composite of two patterns in one policy:\n--   * P3 direct ownership (owner_id matches the current user), OR\n--   * P6 public flag (is_public = TRUE makes the row world-readable).\nCREATE TABLE users (\n    id UUID PRIMARY KEY\n);\n\nCREATE TABLE documents (\n    id UUID PRIMARY KEY,\n    owner_id UUID NOT NULL REFERENCES users(id),\n    is_public BOOLEAN NOT NULL DEFAULT FALSE,\n    title TEXT\n);\n\nCREATE FUNCTION auth_current_user_id() RETURNS UUID\n    LANGUAGE sql STABLE\n    AS 'SELECT current_setting(''app.current_user_id'')::uuid';\n\nALTER TABLE documents ENABLE ROW LEVEL SECURITY;\n\nCREATE POLICY documents_select ON documents\n    FOR SELECT TO PUBLIC\n    USING (owner_id = auth_current_user_id() OR is_public = TRUE);\n";
 
-/// Attribute condition (P9): access gated on a column value the classifier
-/// cannot map to a relation, so it is only partially recognised (confidence C)
-/// and emitted as a no_access relation to review by hand.
-const ATTRIBUTE: &str = "-- Attribute policy (P9): access gated on a column value\n-- the classifier cannot map to a relation, so it is only\n-- partially recognised and classified confidence C.\nCREATE TABLE documents (\n    id UUID PRIMARY KEY,\n    status TEXT NOT NULL\n);\n\nALTER TABLE documents ENABLE ROW LEVEL SECURITY;\n\nCREATE POLICY documents_active ON documents\n    FOR SELECT TO PUBLIC\n    USING (status = 'active');\n";
+/// Attribute condition (P9): access gated on a column value against a literal, which
+/// the tuple query decides row by row, so it classifies at confidence B.
+const ATTRIBUTE: &str = "-- Attribute policy (P9): access gated on a column value\n-- against a literal, which the tuple query decides row by row,\n-- classified confidence B.\nCREATE TABLE documents (\n    id UUID PRIMARY KEY,\n    status TEXT NOT NULL\n);\n\nALTER TABLE documents ENABLE ROW LEVEL SECURITY;\n\nCREATE POLICY documents_active ON documents\n    FOR SELECT TO PUBLIC\n    USING (status = 'active');\n";
 
 /// All examples, in pill order.
 pub const EXAMPLES: &[Example] = &[
@@ -102,7 +100,7 @@ pub const EXAMPLES: &[Example] = &[
     },
     Example {
         label: "Attribute",
-        description: "P9 attribute condition: access gated on a column value (status = 'active') the classifier maps only partially, classified confidence C.",
+        description: "P9 attribute condition: access gated on a column value (status = 'active') the tuple query decides row by row, classified confidence B.",
         icon: ExampleIcon::Attribute,
         sql: ATTRIBUTE,
     },
