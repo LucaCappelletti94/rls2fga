@@ -1,4 +1,5 @@
 use rls2fga::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
+use rls2fga::classifier::patterns::{MembershipExclusion, PatternClass};
 use rls2fga::parser::sql_parser::parse_schema;
 use rls2fga::translator::{Translation, TranslatorBuilder};
 use rls2fga::types::{records_from_row, ConfidenceLevel, Record, TableId};
@@ -109,6 +110,121 @@ fn a_restrictive_blocklist_wrapped_in_a_function_matches_the_inline_clause() {
     assert_eq!(wrapped_blocks.confidence, inline_blocks.confidence);
     let translated = translator
         .translate(&parse_schema(&wrapped_sql).expect("schema parses"))
+        .expect("translation plans");
+    assert!(
+        translated
+            .notes()
+            .iter()
+            .all(|note| !note.severity().diverges_from_database()),
+        "{:?}",
+        translated.notes()
+    );
+    let blocked = records(&translated, "blocks", "d1", "alice");
+    let shared = records(&translated, "shares", "d1", "alice");
+    assert!(
+        shared.iter().any(|record| record.subject == "user:alice"),
+        "{shared:?}"
+    );
+    assert!(blocked.iter().all(|record| !shared.contains(record)));
+}
+
+#[test]
+fn a_restrictive_blocklist_behind_a_chain_of_functions_matches_the_inline_clause() {
+    let blocked_escaped = BLOCKED.replace("docs.id", "d").replace('\'', "''");
+    let functions = format!(
+        "CREATE FUNCTION inner_blocked(d TEXT) RETURNS boolean LANGUAGE sql STABLE
+         SET search_path TO public, pg_catalog, pg_temp
+         AS 'SELECT NOT {blocked_escaped}';
+         CREATE FUNCTION outer_blocked(d TEXT) RETURNS boolean LANGUAGE sql STABLE
+         AS 'SELECT inner_blocked(d)';"
+    );
+    let inline_sql = format!(
+        "{TABLES} {functions}
+         CREATE POLICY docs_read ON docs FOR SELECT USING ({SHARED});
+         CREATE POLICY docs_blocks ON docs AS RESTRICTIVE FOR SELECT USING (NOT {BLOCKED});"
+    );
+    let chained_sql = format!(
+        "{TABLES} {functions}
+         CREATE POLICY docs_read ON docs FOR SELECT USING ({SHARED});
+         CREATE POLICY docs_blocks ON docs AS RESTRICTIVE FOR SELECT USING (outer_blocked(id));"
+    );
+    let translator = translator();
+    let inline = translator.classify(&parse_schema(&inline_sql).expect("schema parses"));
+    let chained = translator.classify(&parse_schema(&chained_sql).expect("schema parses"));
+    let inline_blocks = inline
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("inline restrictive clause classifies");
+    let chained_blocks = chained
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("function-chained restrictive clause classifies");
+    assert_eq!(chained_blocks.confidence, inline_blocks.confidence);
+    assert!(
+        matches!(
+            &chained_blocks.pattern,
+            PatternClass::MembershipExclusion(MembershipExclusion { base: None, .. })
+        ),
+        "{:?}",
+        chained_blocks.pattern
+    );
+    let translated = translator
+        .translate(&parse_schema(&chained_sql).expect("schema parses"))
+        .expect("translation plans");
+    assert!(
+        translated
+            .notes()
+            .iter()
+            .all(|note| !note.severity().diverges_from_database()),
+        "{:?}",
+        translated.notes()
+    );
+}
+
+#[test]
+fn an_and_mixed_function_wrapped_exclusion_keeps_its_base_and_subtract() {
+    let blocked_escaped = BLOCKED.replace("docs.id", "d").replace('\'', "''");
+    let function = format!(
+        "CREATE FUNCTION is_blocked(d TEXT) RETURNS boolean LANGUAGE sql STABLE
+         SET search_path TO public, pg_catalog, pg_temp
+         AS 'SELECT NOT {blocked_escaped}';"
+    );
+    let inline_sql = format!(
+        "{TABLES} {function}
+         CREATE POLICY docs_read ON docs FOR SELECT USING ({SHARED});
+         CREATE POLICY docs_blocks ON docs AS RESTRICTIVE FOR SELECT USING ({SHARED} AND NOT {BLOCKED});"
+    );
+    let mixed_sql = format!(
+        "{TABLES} {function}
+         CREATE POLICY docs_read ON docs FOR SELECT USING ({SHARED});
+         CREATE POLICY docs_blocks ON docs AS RESTRICTIVE FOR SELECT USING ({SHARED} AND is_blocked(id));"
+    );
+    let translator = translator();
+    let inline = translator.classify(&parse_schema(&inline_sql).expect("schema parses"));
+    let mixed = translator.classify(&parse_schema(&mixed_sql).expect("schema parses"));
+    let inline_blocks = inline
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("inline restrictive clause classifies");
+    let mixed_blocks = mixed
+        .iter()
+        .find(|policy| policy.name() == "docs_blocks")
+        .and_then(|policy| policy.using_classification())
+        .expect("AND-mixed restrictive clause classifies");
+    assert_eq!(mixed_blocks.confidence, inline_blocks.confidence);
+    assert!(
+        matches!(
+            &mixed_blocks.pattern,
+            PatternClass::MembershipExclusion(MembershipExclusion { base: Some(_), .. })
+        ),
+        "{:?}",
+        mixed_blocks.pattern
+    );
+    let translated = translator
+        .translate(&parse_schema(&mixed_sql).expect("schema parses"))
         .expect("translation plans");
     assert!(
         translated
