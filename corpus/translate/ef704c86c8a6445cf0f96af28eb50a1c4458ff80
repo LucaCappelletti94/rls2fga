@@ -1,0 +1,5 @@
+-- Th; END';
+
+CREATE TRIGGER docs_torequest.jwt.claim.subuch BEFORE UPDATE ON docs
+    FOR EACH ROW EXECUTE FUNCTION toucÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿuch BEFORE UPDATE Oÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ RENAME TO ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿBcurrent_setting(((((
+þ( Tam

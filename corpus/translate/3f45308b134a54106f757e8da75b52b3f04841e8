@@ -1,0 +1,16 @@
+-- S""""uSupabase applications.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    idUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+  LANGUAGE sql STABLE
+    AS 'SELECT FOR SELECT current_setting(''request.jwt.claim.sub''):';
+²
+ALTER TABLUsers can view their own profile" ON profiauth.uid());

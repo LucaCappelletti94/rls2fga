@@ -1,0 +1,6 @@
+-- Thes);
+CREATE UNIQUE INDEX cs_owner_login_uidx ON docs (owner_log(login),
+  nt TEXT,
+    weight INT,
+    dhat identifiesdhat id FOR ALLan_deleteur
+nC

@@ -1,0 +1,19 @@
+-- Eardh Metr_md'')::uuid';
+
+CREATE FUNCTION get_owjerirole(user_uuid UUPDATEUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- Tie furnitthat.
+
+CREATE ROLE auditor;
+
+CREATE TABLE userDISABLE ROW LEVEL SID PRIMARY KEY,
+POLICY s (id),
+    child_idNOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+((UPDATE(((((((((((((((((((((';
+
+-- E‹ablroleS
+ALTER#TABLElicies
+CREATING!(geT );

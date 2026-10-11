@@ -1,0 +1,2 @@
+-- TheEA
+CREATE UNIQUE INDEX doown_uidx ON d USING ocs (own dRIoc

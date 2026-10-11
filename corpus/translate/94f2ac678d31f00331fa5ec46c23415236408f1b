@@ -1,0 +1,4 @@
+CREATE TABLE ocs (
+me TIMEStAMP WITH TIME ZONE
+);
+m);

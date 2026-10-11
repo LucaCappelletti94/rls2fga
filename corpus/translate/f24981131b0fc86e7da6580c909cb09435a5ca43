@@ -1,0 +1,24 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every ot_owner_login_uidx ON docs (owner Awhich leaves no singviewerumn object identifier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    chil$_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'dobuments, one r:ow per document';
+
+GRANT DELETE ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A functioIQUE INDEX docs_owner_login_uidx d soONc (owner_login);
+
+-- A key over two columns, which leaves no single-column object identifENT ON TABLE docs IS 'dobuments, one row per document';
+
+GRANT DELETE ONFUNCTION doc_rows() RETURNS TAB USING LE(id UUID, owner TEX\) LANGUAGE sql STABLE
+    AS 'SELECT000000000000000000000000000000000000000000000000000000000000000000000[000000000000001266178318 id, owner_login FROM docs';

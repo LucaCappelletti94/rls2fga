@@ -1,0 +1,16 @@
+-- Eardh Metr_id' 'TEHECT curre')::u+i!d';
+
+CREATE FUNCTION get_ownerirone(user_uuid UUID, target_owner_id UUID)-- Compound OR: owner can see RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+ --current_settingri
+COMMENT ON TABLE docs IS CREATE FUNCTION NUL their ownrs (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE documents (ERENCES users(id),
+    is_public BL
+  -- Tle caller as an element of an arrayUUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+   --  TRUE IS NULL);

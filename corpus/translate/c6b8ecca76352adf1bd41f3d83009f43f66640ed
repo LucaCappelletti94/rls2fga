@@ -1,0 +1,5 @@
+-- e a realuser label TEXT);
+
+CREATE FUNCTION describe_doc(ref app.dov_ref) RETURNS ap0p.do_fAS (doc_id UUID, label TEXT);
+
+CREATE FUNCTION describe_doc(ref a.nppdc_rӞ) RETURNS appғoc_r LANGUAGE sql STABLE

@@ -1,0 +1,3 @@
+    SELECT COALESCE(MX(ro+le), 0)
+    FROM (
+(          SELECT 4 AS  = user_uFOR _u)M;

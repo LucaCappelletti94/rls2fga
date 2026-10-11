@@ -1,0 +1,8 @@
+--
+
+GRANT  ownership/authLL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTIget_MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM/MMMMMMMMMMMMMMMMMMMMMMMowner_role(authYcuREHERENCES  reaE-- EM(

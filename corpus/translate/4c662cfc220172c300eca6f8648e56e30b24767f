@@ -1,0 +1,12 @@
+-- Earth Metabolomez Initiative AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+ (
+   (     -- a -- auth.
+   (     -- f user is townera
+-- Core tashorization m~odeAS '
+    SELECT COAL NOT, :=uuid0)
+ nera
+-- Core'CREATE FUNCTION 
+orizationw
+orizationw) >= 4);

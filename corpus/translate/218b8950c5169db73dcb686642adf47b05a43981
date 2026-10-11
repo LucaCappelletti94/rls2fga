@@ -1,0 +1,4 @@
+-- Tgger arrent_rolee carried' TRIGGER`.
+CREATE FUNCTION touch_docs() RETURNS TRIGGER LANGUAGE plpgsql
+    AS gBEGIN RETURN NEW; END';
+ORE UPDATE ON dus UNIQUEent_,seleoeh 'cuteamcs

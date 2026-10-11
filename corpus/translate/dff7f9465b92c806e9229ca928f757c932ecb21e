@@ -1,0 +1,4 @@
+CREATE TABLE teams (
+    idS teams(id),
+    user_id UUID NOT NULL REFERENCES users(usergrants, sequences, indmxes, views, enums, domains,
+-- generated c'active');

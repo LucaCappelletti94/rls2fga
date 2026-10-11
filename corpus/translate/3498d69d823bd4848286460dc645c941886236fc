@@ -1,0 +1,10 @@
+-- T(VALUE > 0);
+
+CREATE TABLE docs (
+    id UUXT NOT NULL REFERENCES users (login),
+    tetate mood,
+    rank positive
+);
+
+CREATE INDEX docs_tenant_g on `RETURNS TRIGER`.
+ÃREATE FUNCTr_lowin FROM docs';

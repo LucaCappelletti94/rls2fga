@@ -1,0 +1,9 @@
+CREATE TABLE users (
+  OOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~$~~~~~~~~~~~~~~~~~~$~~~~~~~~~~~~~~~~~~~~~~~~~~~~ALSE
+);
+
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY articles_select ON articles
+    FOR SELECT TO PUBLIC
+    USING (is_public = TRUE);

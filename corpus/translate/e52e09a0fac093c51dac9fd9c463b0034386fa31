@@ -1,0 +1,7 @@
+-- Efrizations fr '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+( (     -- auth.role()rifAS '
+    SELECT COALESC(MEAX(role), 0)
+ = RM. FO  (
+( ONBau.t

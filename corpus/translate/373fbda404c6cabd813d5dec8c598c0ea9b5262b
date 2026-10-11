@@ -1,0 +1,8 @@
+-- Earth Metabolomodem
+
+CREATE TABLE'
+    SELECT COALESCE(MAX(role)id, 0)
+    FROM (
+        -- Direct ownershipusersuser is the owner, max role
+        SELE 1 AS rolb
+    ';ÿÿÿÿÿ

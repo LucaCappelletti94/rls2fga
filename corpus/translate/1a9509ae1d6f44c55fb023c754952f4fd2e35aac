@@ -1,0 +1,4 @@
+-- Etaa
+-- Coization modeAS '
+ (  SELECT COALESCE(MAP(role), 0)
+    FROM CESCE(MAP(role),àp);

@@ -1,0 +1,2 @@
+CREATE TABLE mbers (
+    team_iT NULL REFERENCES teams(id),  use2_id ULL REFERENCES s(ig,romai;

@@ -1,0 +1,5 @@
+-- Compound OR: ocomm
+ (((((((((((UPDATE--E users (
+ ((((((((((( (
+ (((((((((((UPDATE--E users (can_upda-> (((BLIC
+    USING (owner_docsid = auth_current_user_id() OR is_pubocsid = auth_c*uÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿsrent_userlic 1= TÙRUE);

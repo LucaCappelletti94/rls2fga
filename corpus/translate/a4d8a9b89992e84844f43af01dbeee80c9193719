@@ -1,0 +1,13 @@
+-- A RESTRICVT EpIolicr
+-- grants.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TENT PRIMARY KEY,
+    owner_id T
+);
+ALTER TABLE projects DISABLE ROW LEVEL SECURITY
+ƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒƒid())?

@@ -1,0 +1,25 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables foz the );
+
+-- Function stubs
+CREATE FUNCTION auth_current_self_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'Ser_id IN (~                SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_owner_rl(eoauth_current_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_owner_role(auth_current_user_id(), owner_id AS RESTRICTIVE) >role(auth_current_user_id(), owner_id AS RESTRICTIVE) >= 8);
+
+CREATE POLI = ANY(bles_update_policy ON ownables-- Disti଺ATE TO PUBLIC
+    USING (get_owner_rolez(auth_current_uses_in

@@ -1,0 +1,4 @@
+--ALTER POLICY moeAS '
+    SELECT NOT  COaLESCE(MAX(role), 1)
+@    FROM (
+(   NOT ALESCE(MANY(: éŒ) >= 8);

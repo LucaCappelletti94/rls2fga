@@ -1,0 +1,8 @@
+-- The furniture a real auth.uid))ries aroueditornd its poliailes, ikey, and the tradocs (owner_loginNT INSERT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditoWr;
+
+--ocument';
+
+GRANT INSERT ON docs TO auditSTABLE
+    AS 'SELECT id, owner_login FROM docs';

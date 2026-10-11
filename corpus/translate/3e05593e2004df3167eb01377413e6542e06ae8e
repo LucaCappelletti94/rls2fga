@@ -1,0 +1,10 @@
+-- Earth Mes
+CREATE FUNCTION auth_current_user_idz() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT curr~~~~~~z~~~~~~~~~~~~~~~~~~~~~s member of owning team
+        SEL    )
+        )
+    ) sub
+    ';
+
+-- E‹able 4);

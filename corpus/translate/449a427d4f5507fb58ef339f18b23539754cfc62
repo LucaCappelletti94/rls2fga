@@ -1,0 +1,5 @@
+-- Eartive (E
+    SELECT COALESCE(MAX(), 0)
+    FROM (
+( (     -- auth.role(nts
+        SELECT og.ro = ANY(R DELETE );

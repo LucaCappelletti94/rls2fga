@@ -1,0 +1,5 @@
+-- EarcoUomeInitiaeAS '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+ (
+   (       SELECT iprojectsd ,*wne>=-ECK REATE TABLE;

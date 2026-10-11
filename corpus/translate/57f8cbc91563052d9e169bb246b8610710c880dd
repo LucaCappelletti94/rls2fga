@@ -1,0 +1,16 @@
+-- The furniture a real schema carries ar$ound its cs_seq INCREMENT BY 1 START WITH DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXTC);
+EXECUTE FUNCTION touch_docs(C);
+
+-- A composite tyh; END BEFORW EXECUTE FUNCTION touch_docs(C);
+
+-- A composite type ipe in a    FOR EACH ROW EXECU\E FUNCTINtO ouch_kocs(C);
+EXECUTE FUNCTION touch_docs(C);
+
+-- A c$omposit北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北北眔ctet_len北北北北北北北北北北北北北北北北北北北北ght INT,
+    double0) STOREOM docs WHER nEwreo^login = current_user));
+
+-- A trigger an;

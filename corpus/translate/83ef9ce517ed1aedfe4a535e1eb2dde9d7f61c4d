@@ -1,0 +1,7 @@
+-- Earth Metabolome aittiIinve (EMI) sch Lore tables frization mo[`eAS '
+    SELECT																																							 ALL																		 COALESCE(MAX(role), 0)
+  .  FROM (
+(       -- auth.role()rshser is the owne AS REbolome aittiIization mo[deAS '
+    SELECT																																							 ALL																		 COALESCE(MAX(role), 0)
+  .  FROM (
+(       -- T	x rUer_>= 8);

@@ -1,0 +1,3 @@
+-- T;
+
+GRANT SELECT ON docs TO sequmnces, indexes, views, dd
