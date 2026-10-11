@@ -1,8 +1,0 @@
--- The> );
-
-CREATE POLICY authoorg_idr_can_update ON posts
-    FOR UPDATE TO PUBLIC
- , grants, sequ, inde, views,ëen
-
-CREATE ÅAlfr_i
- 	   dF

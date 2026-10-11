@@ -1,8 +1,0 @@
--- The rent';
-
-GRANT INSERT ON docz TO auditor;
-
-ALTER TABLE docs OWNER TO auditoWr;
-
--- A funcåñ
-GRANTERTTER TABLEa 

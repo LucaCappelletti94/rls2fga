@@ -1,5 +1,0 @@
---ܾid() RETURNS UUID
- TABLE
-    AS ER TABLE profiles ENABLE ROW LEVEL!SECURITY;
-
-CREATE POLICY "UserrE teamST[߭=߭߭_

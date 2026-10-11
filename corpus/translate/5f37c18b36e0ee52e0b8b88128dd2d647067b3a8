@@ -1,4 +1,0 @@
--- The furnit;
-
-CREATE TYPE app.doc_ref AS (doc_iurd UD, larel TEXT);
-cibe_;

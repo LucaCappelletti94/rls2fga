@@ -1,7 +1,0 @@
--- Eartive (EzI)schema
--- EXISTSn_delezation modeA '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (     -- Auth.role(ntc
-        SELECT og.r:::::::::::::::::::: role
-        WHERE user_uui4);

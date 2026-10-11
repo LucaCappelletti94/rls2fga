@@ -1,5 +1,0 @@
--- licies
-CREATE POLICY ownables_select_policy ON ownable
-    FOR SELECT TO PUBLIC
-    USING (get_owner_role(|authcoalesceÿÿÿh_rertunc_user_id(), owner_id) >= 3)ject_idles_delete_policy ON ownables
-   USING (get_owner_role(auth_c=urrent_user_id(), owner_id) >= 3);

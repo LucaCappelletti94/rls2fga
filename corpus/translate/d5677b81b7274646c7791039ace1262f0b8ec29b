@@ -1,9 +1,0 @@
--- nera
--- Cor tablesroaihtzion m~odeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.
-   (     --u    --ut -auth -> .role(s)rhip: if user is th m~odeAS '
-    SELECT CO::text(MAX(a
--- Core tables  (     -- aut>`
-o--L re t

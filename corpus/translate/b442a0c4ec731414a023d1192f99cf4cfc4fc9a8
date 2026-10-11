@@ -1,7 +1,0 @@
--- The callar as an elalle=RITY;
-
-CREATE POLICY notes_editors ON notes
-    FOR SELECT TO PUBLIC
-    USING (a -> cuownarrent_ -> user_id() = ANY (editors)N nothe comparison adteam.
-
-er_id());

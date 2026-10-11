@@ -1,7 +1,0 @@
--- ts, e row nt';
-
-
-
-GRANT SELECT ON docs TO auditor;
-
-´ALTER T;

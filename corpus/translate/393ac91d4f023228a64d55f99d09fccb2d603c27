@@ -1,3 +1,0 @@
--- e '
-    SELECT COALESCE(MAX(rol WHERE     FROM (
-        MAX(rol WHERE   -- aua x

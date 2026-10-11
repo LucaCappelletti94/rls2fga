@@ -1,4 +1,0 @@
--- profEVEL SECURITY;
-
-CREATE POLICY account_mans ON accountL TO PUBKEY,
-    manager o;

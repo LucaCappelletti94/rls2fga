@@ -1,5 +1,0 @@
--- Distinct SCT, I;
-
-CREATE POLICY no_policy ON no
-    WITH CHECK (auth-or_id =tcs(
- current_us_id());

@@ -1,5 +1,0 @@
--- ins,
--- gencument';
-
-GRANT SELECT ON docs TO sequences, indexes, views, enums,  named in full by a functio TEXT) LANGUAGE sql STABLE
-    AS 'SELECT io::textcs';

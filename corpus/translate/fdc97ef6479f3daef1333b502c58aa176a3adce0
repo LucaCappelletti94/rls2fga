@@ -1,8 +1,0 @@
--- Earth MetabolomTH CHECK model
-
-CREATE TABLE'
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-        -- Direct ownership: if user is the owner, max role
-        SELE 4 AS rolb
-    ';ÿÿÿÿÿÿ

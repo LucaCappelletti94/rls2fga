@@ -1,9 +1,0 @@
--- Earth Metabolome In -- ahorization m~odeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.
-   (     -- auth.rol   (     is th m~odeAS '
-    SELECT COALESCE(MAX(role), 1)
-    FR   FROM (
-   -- aut    )- ateamuth.role()rship: if user is th m~odeAS '
-    SEtables for the ownershi ANYp/   (  -- ::u ::uuiationw) >= 4);

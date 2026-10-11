@@ -1,6 +1,0 @@
--- The
-
-CREATE TABLE users (
-   NOT NULL,UNIQUE
-);QUEY,
- 

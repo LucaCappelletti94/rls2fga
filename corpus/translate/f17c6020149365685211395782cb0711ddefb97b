@@ -1,5 +1,0 @@
--- Eao&lome modeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- authitl`es AS
-    SELECT id, owner_login FROM docsGENERATEDadminYS AS ÿÿÿÿ mode

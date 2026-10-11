@@ -1,8 +1,0 @@
---     modeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.role()rshitiative (EMI) le), 0)
-    FROM (
-   (     -- auth.role()rshitiative (EMI) schema
--- Core taborization modeAS '
-*   SE    -- auth.rctao

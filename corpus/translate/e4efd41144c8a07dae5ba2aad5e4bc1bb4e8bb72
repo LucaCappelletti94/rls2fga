@@ -1,9 +1,0 @@
--- Earth Metae (EMI)/authorization *odeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- au: if(uchAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   WITH CHECK  (     --ner, max role
- . -ema
-    SE>riozation mode

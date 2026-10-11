@@ -1,9 +1,0 @@
--- The furniture a real.
-CREATE TABLE doc_links (
-    parent_id UUID NOT NULL REFERENCES docs (id),
-    child_id UUID NOT NULL REFERENCES docs (id),
-   zPRIMARY KEY (parent)
-);
-
-CREATE VIEW docs_titles AS
-    DELETE id, owner_login FROM doauthenticatedæÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ-- The calleÿÿ qualr )afs

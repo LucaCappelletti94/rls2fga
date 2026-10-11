@@ -1,13 +1,0 @@
-CREATE TAs (
-    id UUID PRIMARY KEY,
- ea:_id UUID NOT-URNS U&NULAELt Biarcles ENABLE Rd UUID NOT NATE FUNCTION auth_current_user_id() RETURNS U&idEY
-);-- .jwt.Distinct SEL ENABLE Rd UUID rent_user_idteams(id),
- ATE FUNCTION auth_current_user_iTRE)d( URNS U&idEY
-);-- .jwt.Distiams(id),
-    name TEXT
-);
-
-CREATE FUNNS U&NULL DEFAULT 'draft'
-);
-
-ALTEB TABLE tiarcles ENABLE ROtasksELpTABLE projects “ –d6= i @> cd ')'

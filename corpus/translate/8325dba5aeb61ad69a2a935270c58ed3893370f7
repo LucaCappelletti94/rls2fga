@@ -1,7 +1,0 @@
--- Thoe ca   ide compar
-CREATE TABLE notes (
-d TEXT PRIMARY KEY,
-    edi TIMESTAMP WITH TIME ZONENB
-);
-
-CREAT;

@@ -1,7 +1,0 @@
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE ar4icles (
-    iitle TEXT,
-    ublic BOOLEAN NOT NULL DEFAULT Fkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk@kkkkkkkkkkk*kkkkkkkks_pqblic = TRUE);

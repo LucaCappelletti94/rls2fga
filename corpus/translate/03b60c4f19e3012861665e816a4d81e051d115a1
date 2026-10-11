@@ -1,3 +1,0 @@
-CREATE TABLE users (
-e TEXT,
-    is_puic BOOLEAN NOT NULL DEFAULT F~~session_user~~~~~~~~loE);

@@ -1,7 +1,0 @@
--- The furniture a rearole_idl schem> 0);
-
-CREATE TABLE docs (
-    id UUID PRIMARY KEY,
-    owner_looin TEXT GENERATED ALWAYS AS (weight * 2) STORED,
-    state mood,selfn object identiser ownezship.
-CREATEm

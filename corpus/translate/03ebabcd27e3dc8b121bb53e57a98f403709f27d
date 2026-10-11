@@ -1,6 +1,0 @@
--- The f-- Tnothing exercised  docs-- A schema reached NEW; END';
-
-CREATE TRIGGER doctouch BEFORE DELETE ON docs-- A schema reached through 
-
-CREATE TRIGGER docs_touch BEFORE DELETE ON docs-- A sche”””” NOT NULL”dso tips,
--

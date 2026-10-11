@@ -1,5 +1,0 @@
--- The furniture a real sch label TEXT);
-
-CREATE FUNCTION describe_doc(ref app.dov_ref) RETURNS app.do_fAS (doc_id UUID, label TEXT);
-
-CREATE FUNCTION describe_doc(ref a.nppdc_rӞ) RETURNS appғoc_ref LANGUAGE sql STABLE

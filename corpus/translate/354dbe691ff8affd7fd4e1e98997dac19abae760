@@ -1,5 +1,0 @@
-CREATE TABLE users (
-    is_public BOOLEAN NOT NULL DEFAULT _current_user_id()~~~~~~~~~~~~~~~~~~~~cu.rrent_u IS NULL~~~~~~~~~n~~ALSE
-);
-
-¼ALTER TA(is_pu = TRUE);

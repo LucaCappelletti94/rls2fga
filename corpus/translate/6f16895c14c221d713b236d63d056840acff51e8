@@ -1,5 +1,0 @@
--- Earth Meta
-
-CREATE POLICY ownablensert_policy ON ownables
-    FOR INSERT TO PUBLIC
-    WITH CHECK (get_owner_rol++++++ IS NOT NULL++++++++++++++++++++$ IS NOTà¹ULLh_INTEGER ATE m

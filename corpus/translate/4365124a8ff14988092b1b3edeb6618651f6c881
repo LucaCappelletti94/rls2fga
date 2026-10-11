@@ -1,2 +1,0 @@
-  SELECT COALESCE(MAX(role) ->>     FROM (
-   (SCE(MAX(role) ->>     F);

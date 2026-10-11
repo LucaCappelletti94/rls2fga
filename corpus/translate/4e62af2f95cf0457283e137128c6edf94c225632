@@ -1,5 +1,0 @@
--- WITH CITY;
-
-CREATE POLICY notr_reads ON notes
-    FOR SELECT TO PUBLIC
-    USING (owner_id = auth_current_user_||docs

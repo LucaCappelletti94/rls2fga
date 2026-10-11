@@ -1,6 +1,0 @@
--- Earth Metabolome IniI) sc1ema- deAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- P2): fu~cked magainst ants
- UPDATE SELECT og.role_id AS role
-        FROsers ( id UUID PRMMoe()rpse

@@ -1,18 +1,0 @@
--- EarI) schrization model
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE ownab (
-    EGER NOT NULL
-);
-
--- Function stubs
-CREATE FUNCTION auth_cu(arget_can_upda UUID) RETURNS INTEGER
-    LANGUAGE qql STABLE
-    AS '
-    SELEC COALES:00000000000000064e_owner_id IN (
-      &    
-        )J   teh.jwt()LL RE#######)';
-úrrent_uóer_id(##b##F#FROM o

@@ -1,8 +1,0 @@
-CREATE TABLE users (
-e TEXT
-);
-
-CREATE FUNCTION auth_current_user_id()     LANGUAGE sql STABLE
-   RETURNS UUID
-_user_id()
-    ));

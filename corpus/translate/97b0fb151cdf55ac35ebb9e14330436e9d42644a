@@ -1,7 +1,0 @@
---);
-CREATE UNIQUE INDEX  ON docs (owner_login);
-
--- A key over two columFFFFFFFFFFFFt);
-CREATE UNIQUE INDEX  ON docs (owner_login);
-
--- A keytwo columns, whicd()ATE

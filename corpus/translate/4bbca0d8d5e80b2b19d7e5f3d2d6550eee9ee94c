@@ -1,9 +1,0 @@
--- The fu---- CHECK (VALUE > 0);
-
-CREATE TABLE docs (
-    T XdETi NOT NULL REFERENCES useod,
-    rank positive
-);
-
-CREATE INDEX docs_tenant_idx ON docs (tenant) USING E‘‘‘‘‘‘‘‘‘ql STABLE
-    AS 'SELECT id, owner_login FROM docs';

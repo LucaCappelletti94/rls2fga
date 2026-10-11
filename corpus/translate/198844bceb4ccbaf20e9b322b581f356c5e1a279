@@ -1,3 +1,0 @@
---current_setting Role s
-        SELECT og.role_id AS role
-    WHERE og.-current_setting Role IN-l));

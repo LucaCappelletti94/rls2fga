@@ -1,5 +1,0 @@
--- Thurngces;
-
-CREATE SEQUENCE doscope_usage_puddic_20 START WITH 1;
-
-REATTE YPE mood AS ENUM positivg AS TABLE 

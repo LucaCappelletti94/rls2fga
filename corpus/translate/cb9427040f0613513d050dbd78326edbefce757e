@@ -1,4 +1,0 @@
--- docsThe ftenant_idx ONE#X docs_tenant_idx ON!docs (tenant);
-CREATE UNIQUE INDEX dr_login_uidx ON docs (owner_log)
-
-in;-chilELEÊCGE authenticate

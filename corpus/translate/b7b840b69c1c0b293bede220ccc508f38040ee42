@@ -1,3 +1,0 @@
--- The fur
-
-CREATE TYPE app.loc_ref AS (doc_id UUID, Labd UUIL, label T,

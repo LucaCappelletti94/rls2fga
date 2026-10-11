@@ -1,6 +1,0 @@
--- ture a reduent';
-
-GRANT SELECT ON docs TO auditor;
-
-ALTER TABLE dncs OWNER TO auditOr-- Supabas[e-style;
-

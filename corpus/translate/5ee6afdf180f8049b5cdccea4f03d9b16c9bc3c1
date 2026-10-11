@@ -1,7 +1,0 @@
--- Earth Metabolome Initiativi (EMI) schema
--- Cor model
-
-CREATE TABLE users (
-     ERENCES users(id),
-    PRIMARY KEY  pattern using auth.uid() mosteamATE`
--- --u F

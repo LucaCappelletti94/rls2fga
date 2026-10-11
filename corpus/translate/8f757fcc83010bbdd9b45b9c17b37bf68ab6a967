@@ -1,5 +1,0 @@
--- Earth Metamooblewner, max role
-        SELECT 4 AS role
-        WHERE rget_owner_id
-        AND user_uuid IN (SELEC--LndalaOW LEVEL SECURITYABLE(auth_current_us )
-);

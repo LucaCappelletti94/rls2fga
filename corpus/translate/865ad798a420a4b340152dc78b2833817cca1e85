@@ -1,8 +1,0 @@
---ATALUE > 0);
-
-CREATE TABLE docs (
-    wger_loginnk positive
-);
-
-CREATE INDEX docs_tenant_idx ON docs  Fl STABT,
-    weigtenant T ;

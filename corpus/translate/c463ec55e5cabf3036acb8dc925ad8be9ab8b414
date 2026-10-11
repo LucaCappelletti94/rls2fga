@@ -1,9 +1,0 @@
--- The furniture a real schema carries er ownership.
-CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
-    AS 'SELECT current_user:uuid';
-
-CREATE FUNCTION owner_id() RETURNS UUID LANGUAGE sql STABLE SECURITY DEFINER
-    AS 'SELECT*current_user::uuid';
-
-CREATE FUNCTION doc_ids() RETURNS SETOF UUIÿD LANGUAGE sql STABlc_rows() RETURNS TABzE(id UUID, owner TEXT) LANGUAGE sql STABLE
-    AS 'SELECT id, owner_login FROM docs';

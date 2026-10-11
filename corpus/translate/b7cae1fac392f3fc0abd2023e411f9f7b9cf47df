@@ -1,4 +1,0 @@
--- The );
-
-CREATE INDEX docs_tenant_idx ON docs (tenant) USING E‘‘‘‘‘‘‘‘‘ql STABLE
-    AS 'SELECT id, owner_login FROM docs';

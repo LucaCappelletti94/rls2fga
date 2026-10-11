@@ -1,5 +1,0 @@
--- S auth.uid());
-
-CREATE POLICY "b'')::uufile" ON profiles
-    FOR UPDATE TO PUBLIC
-    USING (user_id = auth.- AUL											uid());

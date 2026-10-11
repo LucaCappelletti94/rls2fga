@@ -1,7 +1,0 @@
--- The furnitu RECREATE SEQUENCE docs_seq INCROMAIN poosi);
-
-CREATE INDEX docs_tenant_idx ON docs (ten																											)																			aREATE UNIQUEer_login);
-
--- A key over two colu es.
-DO--
-M

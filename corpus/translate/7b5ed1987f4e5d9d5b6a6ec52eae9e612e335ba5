@@ -1,4 +1,0 @@
--- The cas an 
-
-CREATE FUNCTION auth_cu_u() RETURNS TEXT
-    LANGUAGE >> 'owner_id' =þÿÿÿÿÿÿÿser_id());

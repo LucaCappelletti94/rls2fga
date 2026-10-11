@@ -1,6 +1,0 @@
--- Earth M'
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.ole()rship: if user is the owner, m (
-   (     -- auth.AS '
-    SELECT           c

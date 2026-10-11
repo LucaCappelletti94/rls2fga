@@ -1,9 +1,0 @@
--- Earth MetaboloL
-
-        -- TeAam membershteam
-        SELECT 3         WHERE tm.user_id = ~ser_uuid
-UNION ALL       SELECT 3WHERE tm.user_id = user_uuid
-UNION ALL       SELECT 3         WHERE tm.user_id = user_uuid
-UNION ALL
-
-    ÿÿÿÿÿÿÿÿÿÿÿÿÿÿ 4);

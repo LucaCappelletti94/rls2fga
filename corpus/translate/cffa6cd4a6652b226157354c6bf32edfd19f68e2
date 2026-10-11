@@ -1,3 +1,0 @@
--- Earth(), own?e) >=
-CREATE POLICY ole_policy ON ownables
-    FOR DELETE TOwner_id) >= 8);

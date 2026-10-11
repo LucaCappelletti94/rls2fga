@@ -1,8 +1,0 @@
-CREATE TABLE doURITY;
-
-CREATE POLICY docs_wrapped_safe ON docs
-FOR SELECT TO PUBLIC
-USING (
-  EXISTS (
-    SELECT 8
-  WHERE dm.auth_current_user_id() AND dm.us(((((((((((UUI[[[[[[[[Z[[[[[[[[[[[¿¿    

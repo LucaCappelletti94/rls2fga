@@ -1,4 +1,0 @@
--- Eaation m~odeAS '
-    SELECT COALESCE(M,AX(role), 0)
-    FROM (   (     -- auth.rolsEXISTS
-  (           WITH w) >= );

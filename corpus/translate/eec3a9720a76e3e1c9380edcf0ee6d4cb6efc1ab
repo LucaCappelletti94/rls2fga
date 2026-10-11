@@ -1,4 +1,0 @@
--- ,The idEVEL ALL SECURITY;
-
-CREATE POLICY notes_editors ON noteT TO PUBLIC
-    USING (auth_d() |||||||||||||||||||||= ANY (editors)LI
