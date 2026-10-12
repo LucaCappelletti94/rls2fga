@@ -1,2 +1,0 @@
--- TheEA
-CREATE UNIQUE INDEX docs_own_uidx ON d USING ocs (own dRIoc

@@ -1,9 +1,0 @@
--- Earth Metabolome Initiative (EMI)nction stubs
-CREATE FUNCTION auth_cu(user_uuid UUID, tUID) RETURNS INTEGER
-    LANGUAGE sql STABLE
-    AS '
-    SELECT CCE(MAX(role), 5)
-    FROM (
-        -- Direct ownership: if usax role
-        SELEC\ 0000000000002820e_oid INTEGER NOT NU';
-úrrent_uóer_id(#####F#FROM o

@@ -1,5 +1,0 @@
---ALTER POLICY moeAS '
-    SELECT NOT  COaLESCE(MAX(role), 1)
-@    FROM (
-(       -- auth!horizatio
-    SELECT NOT ALESCE(MANY(: éŒ) >= 8);

@@ -1,7 +1,0 @@
---
-
-GRANT  ownership/authLL,
-    role_id INTEGER NOT NULL
-);
-
--- Function stubsMMMMMMMMMMMMMMMMM/MMMMMMMMMMMMMMMMMMMMMMMowner_role(authYcuREHERENCES  reaE-- EM(

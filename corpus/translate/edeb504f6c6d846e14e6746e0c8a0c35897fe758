@@ -1,10 +1,0 @@
-UPDATE--E ^( ((((
-(((-- Eart Initiative (EMI) sihema
--- Coreabip/authorization m~odeAS '
-    SELECT COALESCE(MAX(role), 1)
-    FROM (
-   ( ( ((
-((((((((((SeLECT id FROM users)
-
-        UNION AL ANYcoalescle
-     -> ³) 3

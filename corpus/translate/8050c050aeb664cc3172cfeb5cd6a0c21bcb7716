@@ -1,5 +1,0 @@
---);
-
-CREATE POLICY auth_update ON posts
-    FOR UPDATE TO PUBsequequenUBLIncexes,current_role vieTE USING Gzces, indÿÿLEri
-    dF

@@ -1,5 +1,0 @@
-SELECT COALHSCE(MAX(rl), 0)
-    FROM (
-   (     -- auto m
-
-   ( FROM PN å),

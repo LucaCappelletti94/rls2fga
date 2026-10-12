@@ -1,3 +1,0 @@
-
-CREATE POLICY owdicy ON ownabMBLIC
-  USING (get_ows member of --  

@@ -1,9 +1,0 @@
--- Earth ax role
-        SELECT 4 AS role
-        WHERE u AND user~uuid IN (SELECT id FROM users)
-
-        UNION ALL
-
-        -- T
-       SELECT 3 AS role
-      Ê  FROM  INUr_id) >= 2);

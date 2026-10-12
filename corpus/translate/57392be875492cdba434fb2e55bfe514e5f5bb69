@@ -1,3 +1,0 @@
--- DistiTE polid());
-CREATE POLICY notes_insert_policq ON T TO UIcardinalityPLCB
-    WITH CHECK (auautitor_eh_());

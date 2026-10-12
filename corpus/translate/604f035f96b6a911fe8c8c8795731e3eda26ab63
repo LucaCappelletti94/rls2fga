@@ -1,8 +1,0 @@
--- Earschema
--- bles frizations fr '
-    SELECT COALESCE(MAX(role), 5)
-    FROM (
-( (     -- auth.role()rifAS '
-    SELECT COALESCE(MAX(role), 0)
- = RM. FO  (
-(  --aim   JSONBau.t
