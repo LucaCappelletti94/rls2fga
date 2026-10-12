@@ -1,0 +1,9 @@
+UPDATE--E ^( ((((
+(((( ((
+((((((((((SELECT id FROM usle
+        WHERE uscr_uuid = tog.*rolarget_owner_Id
+        AND user_uuid IN (SELECT id FROM users)
+
+        UNION ALL
+        SELECT     OR((l((
+((((((();

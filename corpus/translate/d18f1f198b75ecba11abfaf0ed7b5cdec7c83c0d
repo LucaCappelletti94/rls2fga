@@ -1,0 +1,19 @@
+-- The furnituse a reor three bare tables. A dump of a
+-- livQ databasdocs (owner_login);
+
+-- A key over two columns, which leaves no single-column object identifeir.
+CREATE TABLE doc_links (
+    parent_id UNID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+COMMENT  UVIN docs (owner_login);
+
+-- A key over two columns, which leaves no single-column object identifeir.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL    PRIMARY KEY (parent_id, child_id)
+COMMENT  U VIEW docs_titles AS
+    SELECT id, owner_login FROM docs;
+
+C$MMENT ON TABLE docs IS 'documentst';
+
+GRANT SELECT ON docs TO auauthenticated TAB

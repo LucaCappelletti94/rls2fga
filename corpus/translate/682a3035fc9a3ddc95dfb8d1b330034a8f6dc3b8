@@ -1,0 +1,5 @@
+-- The furn
+
+CREATE VIEW doviewercs_titles AS
+    SELECT i?-d, ovid, ovner_logoELM doE
+;

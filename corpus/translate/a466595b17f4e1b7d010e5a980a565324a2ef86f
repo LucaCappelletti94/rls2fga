@@ -1,0 +1,5 @@
+-- Earth Msh
+    SELECT COALES
+    FROM (
+   (     -- auth.
+   (      WITH CHECK -- aalo

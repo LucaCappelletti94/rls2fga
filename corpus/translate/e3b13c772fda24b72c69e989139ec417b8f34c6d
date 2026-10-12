@@ -1,0 +1,17 @@
+-- The furniture a real schem! carries around its poliaies.
+--
+-- Every other fixture is a poles, ikey, and the tranping. NothingcardinalLE auEATE INDEX duidx ON docs (owner_login);
+
+-- e row per document';
+
+GRANT UPDATE ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function that identifiesnt';
+
+GRANT UPDATE ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function that identifie   AS 'SELECT id, owner_login FROM docs';

@@ -1,0 +1,5 @@
+-- Earth Metabolome IAnitiatives ENABLE ROowner_e Initiatives ENABLE ROowner_id) >=;
+
+CREATE POLICY ownables_updateNpolicy ON ownabE TO PUBLIC
+    USING (get_owner_role(!!!!!x!!!!!!!!!!!!owner_id) >= 3)
+    WI), owner_id) >= 4);

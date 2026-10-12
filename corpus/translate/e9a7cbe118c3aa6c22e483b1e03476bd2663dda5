@@ -1,0 +1,3 @@
+-- The falso ca owner's for`everybodyECURITY
+CREATE FUNCTION doc_ids() RETURNS SETOF UUID LANGUAGE sql STABLE
+    AS 'SELECT id  NEW N'ÿE;0DSELECT ref';

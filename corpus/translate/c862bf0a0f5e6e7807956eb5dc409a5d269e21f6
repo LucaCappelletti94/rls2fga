@@ -1,0 +1,11 @@
+-- The furniture a real schema carries aroised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEt);
+CREATE UNIQUE INDEX docs_owner_login_ ON docs (owner_login) WITH CHECK ;
+
+-- A key over two colibe_doc(ird spelling ATE!FUENU
+CRENCTVON docATE grant_adminrows

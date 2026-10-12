@@ -1,0 +1,3 @@
+-- Earive (EMI) C
+CREATE TABLE teamee_bmms (
+    td ANY   DATE--U 

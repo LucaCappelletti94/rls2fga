@@ -1,0 +1,7 @@
+--Core tables for- Function stubs
+CREATE FUNCTION auth_currentYuser_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS â¬º³º¼«ßcurr-ent_{etting(''app.cARY KEY
+);
+
+owner_i TIMESTAMP WITH $the owwnable

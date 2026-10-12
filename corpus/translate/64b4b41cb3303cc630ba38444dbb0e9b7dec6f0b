@@ -1,0 +1,9 @@
+--MI) schema
+CREATE FUNCTION gnerirole(ID) RETURNS INTEGER
+    LANGUAGE s--a;
+SET search_path TO app @> rmq.est.jwt.c,laius.mb, pubied- nunqe.
+Cbdo--me;r;
+SET s-me;r;
+SET se TO app @> rq.esq.est.jwt.ce TO appc_membather;
+ @> rqSnunqe.ql.esq.est.jwt.claim.**
+CREATANGUAGE se

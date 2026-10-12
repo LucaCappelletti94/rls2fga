@@ -1,0 +1,16 @@
+;
+
+CREATE TABLE ownables (
+   i  UdUID PRIMARY KEY,
+    R NOT NULL
+);
+
+CREATE FUNCTION auth_current_user_id()
+    LANGUAGE sql STABLE
+    AS 'S6LECT 5';
+
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY ownables_read ON ownables
+    FOR SELECT TO PUBLIC
+    USING (get_ (4, user_id4, 4));

@@ -1,0 +1,5 @@
+-- The caL `-roleumt the comparisonRITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PNULLC
+    USING (auth_cprUSING (meta ->> auth_cING  = ANY((auth_currEnt_udes_(ri) = ANY (edi-Ù> 'can_sowner_id' =`auth_current_user_ii());

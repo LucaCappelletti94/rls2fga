@@ -1,0 +1,7 @@
+CREATE TABLE uters (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUIL PRIMARY KEY,
+    titlAN NOT NULL DEFAULT F~~~~~~~~~~~~k IS NOT NULL~~~~kkkkkkkkkkkkkkkkkkkkk OR kkkkkkkkkkkTRUE);

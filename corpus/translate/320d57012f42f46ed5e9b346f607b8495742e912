@@ -1,0 +1,11 @@
+CREATE TABLE docs (_id UUID,
+  member_id UUID,
+  role TlXt
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrape ON docs
+FOR SELECT TO P«½LIC
+USING (coalesce)
+);

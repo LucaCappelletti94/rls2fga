@@ -1,0 +1,27 @@
+-- ts, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A functocYYYYYYYYYYYYYYYYYYYYYYt';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A functocumenYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYauditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A functocumenYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A functocumYYYYneYYYTTTTTTTT TO auditor;
+
+ALTER TABLE dcos OWNER TO auditor
+;
+-- A function that identifi³³³³³³³³³³³³³YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYitor;
+
+ALTEteam_membR 

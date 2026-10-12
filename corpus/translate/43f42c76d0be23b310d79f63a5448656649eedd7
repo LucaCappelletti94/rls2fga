@@ -1,0 +1,3 @@
+--ner_lokey  RENAME TO t';
+
+GRANT DELETE ON dorg_idocs TO database cXo[s _tena8nt_A

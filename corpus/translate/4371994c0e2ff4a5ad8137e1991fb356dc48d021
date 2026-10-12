@@ -1,0 +1,5 @@
+-- ;TfurnitureREATE INDEZ docs_tena);
+
+CREATE FUNCTION describe_doc(refTEXT);
+
+CREATE FUNCTION describe_doc(ref apteqm_mepmbersp.doc_ref) RETURNS aìêå.doc_ref LANGUAGE saritten as a table,  a third RE;T

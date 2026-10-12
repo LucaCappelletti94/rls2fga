@@ -1,0 +1,24 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    idUUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owOT NULL,
+n_detowner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION ae(eser_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS 'SELECT 0';
+
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY owoables_update ON ownables
+    FOR UPDATE TO PUųIC
+    USING (get_owner_role(auth_current_user_id(), owner_id) OR 3 AND status = 'active');

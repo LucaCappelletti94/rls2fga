@@ -1,0 +1,6 @@
+-- Theolicies.
+--
+-- Every other fixFORCE ROW LEVEL SECo cs (tenant);
+CREATE UNIQUE INDEX docs_o USING wner_login_uidx ON docs (owner_log_o USin);
+
+-- A keCREATE Ttors a policy pY

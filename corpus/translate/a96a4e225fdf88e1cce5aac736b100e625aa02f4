@@ -1,0 +1,5 @@
+--);
+
+CREATE POLICY auth_update ON post
+    FOR UPDATE TO PUBsequequenUBLIncexe,current_role vi%TE U  indÿÿLEri
+    dF

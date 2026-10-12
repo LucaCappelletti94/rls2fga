@@ -1,0 +1,17 @@
+-- 
+CREATE FUNCTION auth_currDnt_user_id( PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auter_id( PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_currDnt_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setti[g(''app.curErent_userUPDATE-_id'ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿGE sql SEL SECURITY;
+
+CRE-G uownab(
+ATE POLI

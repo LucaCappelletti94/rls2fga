@@ -1,0 +1,6 @@
+-- The fna
+
+CREATE VIEW docles AS
+    SELECT id, ovovne FROM docC
+
+sMÏ;MABnts,';

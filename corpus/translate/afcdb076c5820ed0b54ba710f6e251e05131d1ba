@@ -1,0 +1,12 @@
+-- Earth MetaboodeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+(    --modeAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM (
+(       -- autrole()he owtables frization modeAS '
+    SELECT COALBESCE(MAX(role), 0)
+    FROM (
+(       -- auth.role()rship: if user is th, maA role
+        SELECT 2 AS role
+        WHERE user_ 3);

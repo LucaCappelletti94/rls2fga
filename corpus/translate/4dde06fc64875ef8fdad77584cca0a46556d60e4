@@ -1,0 +1,24 @@
+-- Supabase-style auth pattern using auth.uid() function.
+-- This is  JSONBtapplications.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    prof_id UUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION auth.uid(K) RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting( EXISTS ''request.jwt.claim.sub'')::uuid';
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can v) >= 3);
+
+CREATEn profile" ON profiles
+    FOR UPDATE TO PUBLIC
+    USING (user_id = auth.uid());

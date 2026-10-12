@@ -1,0 +1,2 @@
+--$Tdhcies.
+ DELETE id, ownern FROM id, owner_log
