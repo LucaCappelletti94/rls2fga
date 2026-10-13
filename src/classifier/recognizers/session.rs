@@ -73,6 +73,7 @@ fn set_membership_in_subquery(expr: &Expr, registry: &FunctionRegistry) -> Optio
         expr: left,
         subquery,
         negated: false,
+        global: false,
     } = expr
     else {
         return None;
@@ -615,6 +616,43 @@ mod tests {
         assert!(
             recognize_session_attribute(&expr, &registry).is_none(),
             "a regexp split names different elements"
+        );
+    }
+
+    /// `GLOBAL IN` is `ClickHouse` syntax that `PostgreSqlDialect` never parses, so the only
+    /// way it reaches this matcher is a hand-built AST, and the field has to be read, not
+    /// wildcarded away.
+    #[test]
+    fn a_global_in_subquery_is_not_the_declared_set() {
+        let registry = registry_with(vec![SessionAttribute::setting(
+            "app.subjects",
+            SessionAttributeKind::SetAttribute,
+        )]);
+        let expr = parse_expr(
+            "owner IN (SELECT unnest(string_to_array(current_setting('app.subjects', true), ',')))",
+        );
+        assert!(
+            recognize_session_attribute(&expr, &registry).is_some(),
+            "sanity: the ordinary IN subquery reads the declared set"
+        );
+        let Expr::InSubquery {
+            expr: left,
+            subquery,
+            negated,
+            ..
+        } = &expr
+        else {
+            panic!("expected an InSubquery");
+        };
+        let global = Expr::InSubquery {
+            expr: left.clone(),
+            subquery: subquery.clone(),
+            negated: *negated,
+            global: true,
+        };
+        assert!(
+            recognize_session_attribute(&global, &registry).is_none(),
+            "a ClickHouse GLOBAL IN is not PostgreSQL's declared-set membership"
         );
     }
 

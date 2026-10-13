@@ -190,6 +190,7 @@ fn compared_operands<'e>(
             expr: tested,
             subquery,
             negated: false,
+            global: false,
         } => {
             return sole_projection(subquery)
                 .and_then(|projected| request_read(projected, registry))
@@ -203,4 +204,47 @@ fn compared_operands<'e>(
         .filter_map(|(other, request)| Some((other, request_read(request, registry)?)))
         .filter(|(other, _)| request_read(other, registry).is_none())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
+    use crate::parser::expr::parse_expr_for_tests as parse_expr;
+
+    /// `GLOBAL IN` is `ClickHouse` syntax that `PostgreSqlDialect` never parses, so the only
+    /// way it reaches this matcher is a hand-built AST (the fuzzer's `Arbitrary` derive
+    /// included), and the field has to be read, not wildcarded away.
+    #[test]
+    fn a_global_in_subquery_is_not_a_compared_operand() {
+        let mut registry = FunctionRegistry::new();
+        registry.declare_session_attributes(vec![SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )]);
+        let expr = parse_expr("id IN (SELECT current_setting('app.user_id', true))");
+        assert!(
+            !compared_operands(&expr, &registry).is_empty(),
+            "sanity: the ordinary IN subquery reads the caller"
+        );
+        let Expr::InSubquery {
+            expr: tested,
+            subquery,
+            negated,
+            ..
+        } = &expr
+        else {
+            panic!("expected an InSubquery");
+        };
+        let global = Expr::InSubquery {
+            expr: tested.clone(),
+            subquery: subquery.clone(),
+            negated: *negated,
+            global: true,
+        };
+        assert!(
+            compared_operands(&global, &registry).is_empty(),
+            "a GLOBAL IN subquery must not be read as comparing a request value"
+        );
+    }
 }

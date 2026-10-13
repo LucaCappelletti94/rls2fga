@@ -220,6 +220,7 @@ fn exclusion_conjunct<DB: DatabaseLike>(
             expr: left,
             subquery,
             negated: true,
+            global: false,
         } => {
             if !is_current_user_expr(left, registry) {
                 return Ok(None);
@@ -228,6 +229,7 @@ fn exclusion_conjunct<DB: DatabaseLike>(
                 expr: left.clone(),
                 subquery: subquery.clone(),
                 negated: false,
+                global: false,
             }
         }
         Expr::AllOp {
@@ -239,6 +241,7 @@ fn exclusion_conjunct<DB: DatabaseLike>(
                 expr: left.clone(),
                 subquery: subquery.clone(),
                 negated: false,
+                global: false,
             },
             _ => return Ok(None),
         },
@@ -325,4 +328,86 @@ fn column_proven_not_null<DB: DatabaseLike>(db: &DB, table: &TableId, column: &s
         return false;
     };
     column_ref.is_nullable(db) == Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::classifier::function_registry::{SessionAttribute, SessionAttributeKind};
+    use crate::parser::expr::parse_expr_for_tests as parse_expr;
+    use crate::parser::sql_parser::parse_schema;
+
+    const TABLES: &str = "
+CREATE TABLE docs(id TEXT PRIMARY KEY, owner TEXT NOT NULL);
+CREATE TABLE blocks(doc TEXT NOT NULL REFERENCES docs(id), user_id TEXT NOT NULL,
+                    PRIMARY KEY(doc, user_id));
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+";
+
+    fn registry() -> FunctionRegistry {
+        let mut registry = FunctionRegistry::new();
+        registry.declare_session_attributes(vec![SessionAttribute::setting(
+            "app.user_id",
+            SessionAttributeKind::CallerId,
+        )]);
+        registry
+    }
+
+    /// `GLOBAL IN` is `ClickHouse` syntax that `PostgreSqlDialect` never parses, so the only
+    /// way it reaches this matcher is a hand-built AST, and the field has to be read, not
+    /// wildcarded away.
+    #[test]
+    fn a_global_not_in_subquery_is_not_read_as_a_blocklist() {
+        let db = parse_schema(TABLES).expect("schema parses");
+        let registry = registry();
+        let expr = parse_expr(
+            "current_setting('app.user_id', true) NOT IN (
+                 SELECT b.user_id FROM blocks b WHERE b.doc = docs.id
+             )",
+        );
+        let ordinary = try_membership_exclusion(
+            &expr,
+            &db,
+            &registry,
+            "docs",
+            PolicyCommand::Select,
+            0,
+            &ExpansionState::new(),
+        )
+        .expect("classification should not error");
+        assert!(
+            ordinary.is_some(),
+            "sanity: the ordinary NOT IN subquery is read as a blocklist"
+        );
+
+        let Expr::InSubquery {
+            expr: tested,
+            subquery,
+            negated,
+            ..
+        } = &expr
+        else {
+            panic!("expected an InSubquery");
+        };
+        let global = Expr::InSubquery {
+            expr: tested.clone(),
+            subquery: subquery.clone(),
+            negated: *negated,
+            global: true,
+        };
+        let refused = try_membership_exclusion(
+            &global,
+            &db,
+            &registry,
+            "docs",
+            PolicyCommand::Select,
+            0,
+            &ExpansionState::new(),
+        )
+        .expect("classification should not error");
+        assert!(
+            refused.is_none(),
+            "a GLOBAL IN subquery must not be read as a blocklist exclusion"
+        );
+    }
 }

@@ -285,6 +285,7 @@ pub(super) fn constant_in_list(expr: &Expr) -> Option<(&Expr, &[Expr])> {
             expr,
             list,
             negated: false,
+            global: false,
         } => Some((expr, list)),
         Expr::AnyOp {
             left,

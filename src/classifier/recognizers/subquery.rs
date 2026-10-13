@@ -819,6 +819,7 @@ fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &Query, Option<Su
             expr: lhs,
             subquery,
             negated: false,
+            global: false,
         } => (lhs.as_ref(), subquery.as_ref()),
         Expr::AnyOp {
             left,
@@ -2067,6 +2068,7 @@ fn analyze_membership_eq_predicate(
             expr,
             subquery,
             negated: false,
+            global: false,
         } => Some((expr, caller_set_in_subquery(subquery, registry))),
         _ => None,
     };

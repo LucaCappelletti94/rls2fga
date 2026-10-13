@@ -207,6 +207,33 @@ fn recognize_p2_handles_negation_and_literal_filtering() {
 }
 
 #[test]
+fn recognize_p2_role_in_list_refuses_the_clickhouse_global_modifier() {
+    let db = db_with_docs_and_members();
+    let registry = registry_with_role_level();
+
+    let ok = parse_expr("role_level(auth_current_user_id(), id) IN ('viewer', 2)");
+    let Expr::InList {
+        expr,
+        list,
+        negated,
+        ..
+    } = &ok
+    else {
+        panic!("expected an InList");
+    };
+    let global = Expr::InList {
+        expr: expr.clone(),
+        list: list.clone(),
+        negated: *negated,
+        global: true,
+    };
+    assert!(
+        recognize_p2(&global, &db, &registry).is_none(),
+        "a ClickHouse GLOBAL IN is not PostgreSQL's role name IN-list"
+    );
+}
+
+#[test]
 fn recognize_p2_pg_has_role_three_and_two_arg_forms() {
     let db = db_with_docs_and_members();
     let registry = FunctionRegistry::new(); // pg_has_role is a built-in, no registry needed.
@@ -2188,6 +2215,47 @@ fn recognize_p4_in_subquery_handles_negation_and_projection_alias() {
         }) if matches!(pairs.as_slice(), [pair] if pair.join_column == "doc_id")
             && user_column == "user_id"
     ));
+}
+
+#[test]
+fn recognize_p4_in_subquery_refuses_the_clickhouse_global_modifier() {
+    let db = db_with_docs_and_members();
+    let registry = registry_with_role_level();
+
+    let in_subquery = parse_expr(
+        "doc_id IN (
+               SELECT dm.doc_id
+               FROM doc_members dm
+               WHERE dm.user_id = auth_current_user_id()
+             )",
+    );
+    let Expr::InSubquery {
+        expr,
+        subquery,
+        negated,
+        ..
+    } = &in_subquery
+    else {
+        panic!("expected an InSubquery");
+    };
+    let global = Expr::InSubquery {
+        expr: expr.clone(),
+        subquery: subquery.clone(),
+        negated: *negated,
+        global: true,
+    };
+    assert!(
+        recognize_p4_in_subquery(
+            &global,
+            &db,
+            &registry,
+            "docs",
+            PolicyCommand::Select,
+            &ExpansionState::new()
+        )
+        .is_none(),
+        "a ClickHouse GLOBAL IN is not PostgreSQL's membership subquery"
+    );
 }
 
 #[test]
