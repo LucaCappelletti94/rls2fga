@@ -190,6 +190,7 @@ fn compared_operands<'e>(
             expr: tested,
             subquery,
             negated: false,
+            global: false,
         } => {
             return sole_projection(subquery)
                 .and_then(|projected| request_read(projected, registry))

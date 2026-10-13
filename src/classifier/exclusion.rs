@@ -220,6 +220,7 @@ fn exclusion_conjunct<DB: DatabaseLike>(
             expr: left,
             subquery,
             negated: true,
+            global: false,
         } => {
             if !is_current_user_expr(left, registry) {
                 return Ok(None);
@@ -228,6 +229,7 @@ fn exclusion_conjunct<DB: DatabaseLike>(
                 expr: left.clone(),
                 subquery: subquery.clone(),
                 negated: false,
+                global: false,
             }
         }
         Expr::AllOp {
@@ -239,6 +241,7 @@ fn exclusion_conjunct<DB: DatabaseLike>(
                 expr: left.clone(),
                 subquery: subquery.clone(),
                 negated: false,
+                global: false,
             },
             _ => return Ok(None),
         },

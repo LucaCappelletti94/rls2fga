@@ -73,6 +73,7 @@ fn set_membership_in_subquery(expr: &Expr, registry: &FunctionRegistry) -> Optio
         expr: left,
         subquery,
         negated: false,
+        global: false,
     } = expr
     else {
         return None;
