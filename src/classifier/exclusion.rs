@@ -488,6 +488,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
             PolicyCommand::Select,
             0,
             &ExpansionState::new(),
+            true,
         )
         .expect("classification should not error");
         assert!(
@@ -518,6 +519,7 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
             PolicyCommand::Select,
             0,
             &ExpansionState::new(),
+            true,
         )
         .expect("classification should not error");
         assert!(
