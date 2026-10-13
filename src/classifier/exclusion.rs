@@ -3,7 +3,7 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 
-use crate::classifier::expansion::ExpansionState;
+use crate::classifier::expansion::{self, ExpansionState};
 use crate::classifier::function_registry::FunctionRegistry;
 use crate::classifier::patterns::{
     exclusion_confidence, ClassifiedExpr, ExistsMembership, MembershipExclusion, PatternClass,
@@ -30,6 +30,18 @@ pub(crate) enum ExclusionError {
 }
 
 /// Split a clause into its positive grant and correlated blocklists.
+///
+/// `see_through_functions` widens the `AND`/parenthesis flattening below to also
+/// substitute a declared, unregistered `LANGUAGE sql` function call's body in
+/// place of the call, so a blocklist spelled inside such a function classifies
+/// exactly as if it had been written inline. Only the restrictive clause's own
+/// top-level call sets it: every other classification site already rejects a
+/// grant-less result regardless of what this function finds, so widening there
+/// would only spend the shared expansion budget without changing the outcome.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "db, registry, table and state are four separate borrows the recursion threads through"
+)]
 pub(crate) fn try_membership_exclusion<DB: DatabaseLike>(
     expr: &Expr,
     db: &DB,
@@ -38,22 +50,25 @@ pub(crate) fn try_membership_exclusion<DB: DatabaseLike>(
     command: PolicyCommand,
     depth: u32,
     state: &ExpansionState,
+    see_through_functions: bool,
 ) -> Result<Option<ClassifiedExpr>, ExclusionError> {
-    if !has_exclusion_conjunct(expr, depth) {
+    if !see_through_functions && !has_exclusion_conjunct(expr, depth) {
         return Ok(None);
     }
-    let mut conjuncts = Vec::new();
-    if !flatten_conjuncts(expr, depth, &mut conjuncts) {
+    let mut positives: Vec<Expr> = Vec::new();
+    let mut subtract: Vec<ExistsMembership> = Vec::new();
+    if !collect_conjuncts(
+        expr,
+        db,
+        registry,
+        table,
+        depth,
+        state,
+        see_through_functions,
+        &mut positives,
+        &mut subtract,
+    )? {
         return Ok(None);
-    }
-
-    let mut positives = Vec::new();
-    let mut subtract = Vec::new();
-    for conjunct in conjuncts {
-        match exclusion_conjunct(conjunct, db, registry, table, state)? {
-            None => positives.push(conjunct),
-            Some(membership) => subtract.push(membership),
-        }
     }
     if subtract.is_empty() {
         return Ok(None);
@@ -69,8 +84,8 @@ pub(crate) fn try_membership_exclusion<DB: DatabaseLike>(
                 confidence: exclusion_confidence(None),
             }));
         }
-        [base] => crate::classifier::policy_classifier::classify_expr_depth(
-            base,
+        [one] => crate::classifier::policy_classifier::classify_expr_depth(
+            one,
             db,
             registry,
             table,
@@ -79,15 +94,15 @@ pub(crate) fn try_membership_exclusion<DB: DatabaseLike>(
             state,
         ),
         [first, rest @ ..] => {
-            let base = rest
+            let folded = rest
                 .iter()
-                .fold((*first).clone(), |previous, conjunct| Expr::BinaryOp {
+                .fold(first.clone(), |previous, conjunct| Expr::BinaryOp {
                     left: Box::new(previous),
                     op: BinaryOperator::And,
-                    right: Box::new((*conjunct).clone()),
+                    right: Box::new(conjunct.clone()),
                 });
             crate::classifier::policy_classifier::classify_expr_depth(
-                &base,
+                &folded,
                 db,
                 registry,
                 table,
@@ -107,28 +122,10 @@ pub(crate) fn try_membership_exclusion<DB: DatabaseLike>(
     }))
 }
 
-/// Flatten `AND` within the classifier's depth bound.
-fn flatten_conjuncts<'a>(expr: &'a Expr, depth: u32, conjuncts: &mut Vec<&'a Expr>) -> bool {
-    if depth > crate::classifier::policy_classifier::MAX_CLASSIFY_DEPTH {
-        return false;
-    }
-    match expr {
-        Expr::Nested(inner) => flatten_conjuncts(inner, depth + 1, conjuncts),
-        Expr::BinaryOp {
-            left,
-            op: BinaryOperator::And,
-            right,
-        } => {
-            flatten_conjuncts(left, depth + 1, conjuncts)
-                && flatten_conjuncts(right, depth + 1, conjuncts)
-        }
-        _ => {
-            conjuncts.push(expr);
-            true
-        }
-    }
-}
-
+/// Cheap pre-check for the ordinary path: whether `expr`, flattened through `AND`
+/// and parentheses only, carries a conjunct shaped as a negated membership check.
+/// Skipped under `see_through_functions`, where a function call may still hide
+/// one and the full collection below is the only way to tell.
 fn has_exclusion_conjunct(expr: &Expr, depth: u32) -> bool {
     if depth > crate::classifier::policy_classifier::MAX_CLASSIFY_DEPTH {
         return false;
@@ -153,6 +150,124 @@ fn has_exclusion_conjunct(expr: &Expr, depth: u32) -> bool {
             matches!(unparenthesize(expr), Expr::Exists { negated: false, .. })
         }
         _ => false,
+    }
+}
+
+/// Flatten `expr` through `AND` and parentheses, testing each resulting conjunct
+/// and sorting it into `positives` or `subtract`.
+///
+/// Under `see_through_functions`, a conjunct that calls a declared, unregistered
+/// `LANGUAGE sql` function is substituted by that call's body before testing,
+/// under the same cycle cut and owner-read bookkeeping the ordinary expansion in
+/// `classify_expr_inner` uses, so a membership read through a `SECURITY DEFINER`
+/// helper gets the identical leniency a function-wrapped positive grant already
+/// gets. An `IS TRUE` suffix unwraps the same way, since it changes nothing a
+/// plain boolean conjunct would not already mean. `false` only past the
+/// classifier's depth bound, where the caller treats the clause as carrying no
+/// exclusion rather than guessing at a partial split.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "db, registry, table and state are four separate borrows the recursion threads through"
+)]
+fn collect_conjuncts<DB: DatabaseLike>(
+    expr: &Expr,
+    db: &DB,
+    registry: &FunctionRegistry,
+    table: &str,
+    depth: u32,
+    state: &ExpansionState,
+    see_through_functions: bool,
+    positives: &mut Vec<Expr>,
+    subtract: &mut Vec<ExistsMembership>,
+) -> Result<bool, ExclusionError> {
+    if depth > crate::classifier::policy_classifier::MAX_CLASSIFY_DEPTH {
+        return Ok(false);
+    }
+    match expr {
+        Expr::Nested(inner) => collect_conjuncts(
+            inner,
+            db,
+            registry,
+            table,
+            depth + 1,
+            state,
+            see_through_functions,
+            positives,
+            subtract,
+        ),
+        Expr::IsTrue(inner) if see_through_functions => collect_conjuncts(
+            inner,
+            db,
+            registry,
+            table,
+            depth + 1,
+            state,
+            see_through_functions,
+            positives,
+            subtract,
+        ),
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::And,
+            right,
+        } => Ok(collect_conjuncts(
+            left,
+            db,
+            registry,
+            table,
+            depth + 1,
+            state,
+            see_through_functions,
+            positives,
+            subtract,
+        )? && collect_conjuncts(
+            right,
+            db,
+            registry,
+            table,
+            depth + 1,
+            state,
+            see_through_functions,
+            positives,
+            subtract,
+        )?),
+        _ => {
+            if see_through_functions {
+                if let Some(expansion::Expansion::Body {
+                    identity,
+                    reads_bypass_rls,
+                    expr: body,
+                    ..
+                }) = expansion::expand_function_call(expr, db, registry, table, state)
+                {
+                    state.enter(identity);
+                    if reads_bypass_rls {
+                        state.enter_owner_read();
+                    }
+                    let collected = collect_conjuncts(
+                        &body,
+                        db,
+                        registry,
+                        table,
+                        depth + 1,
+                        state,
+                        see_through_functions,
+                        positives,
+                        subtract,
+                    );
+                    if reads_bypass_rls {
+                        state.leave_owner_read();
+                    }
+                    state.leave();
+                    return collected;
+                }
+            }
+            match exclusion_conjunct(expr, db, registry, table, state)? {
+                None => positives.push(expr.clone()),
+                Some(membership) => subtract.push(membership),
+            }
+            Ok(true)
+        }
     }
 }
 

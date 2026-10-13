@@ -178,7 +178,7 @@ fn classify_clause<DB: DatabaseLike>(
         return classify_expr_depth(expr, db, registry, table, command, 0, &state);
     }
     let classified = match crate::classifier::exclusion::try_membership_exclusion(
-        expr, db, registry, table, command, 0, &state,
+        expr, db, registry, table, command, 0, &state, true,
     ) {
         Ok(None) => classify_expr_inner(expr, db, registry, table, command, 0, &state),
         Err(reason) => unknown_d(expr, reason.to_string()),
@@ -239,7 +239,7 @@ pub(crate) fn classify_expr_depth<DB: DatabaseLike>(
         );
     }
     let classified = match crate::classifier::exclusion::try_membership_exclusion(
-        expr, db, registry, table, command, depth, state,
+        expr, db, registry, table, command, depth, state, false,
     ) {
         Ok(None) => classify_expr_inner(expr, db, registry, table, command, depth, state),
         Err(reason) => unknown_d(expr, reason.to_string()),
