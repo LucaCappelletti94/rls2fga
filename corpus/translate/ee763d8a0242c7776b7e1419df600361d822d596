@@ -1,2 +1,0 @@
--- Tdhcies.
- DELETE id, ownerogin FROM id, owner_log

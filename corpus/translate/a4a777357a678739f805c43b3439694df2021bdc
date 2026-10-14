@@ -1,3 +1,0 @@
---L S]
-CREATE FUNCTION owner_idmembers (
-   team, kwr_id) IN);

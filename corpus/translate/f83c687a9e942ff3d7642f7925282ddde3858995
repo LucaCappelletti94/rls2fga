@@ -1,4 +1,0 @@
--- Eauth_role()ship/authorizatio& m
-    SELECT CO<LESCE(MAX(role), 0)
-    FROM (
-   (    WITH CHECK (orizationw) >= 4);

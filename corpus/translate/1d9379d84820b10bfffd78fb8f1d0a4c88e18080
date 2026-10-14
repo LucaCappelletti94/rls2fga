@@ -1,8 +1,0 @@
-UPDATE--E ^( ((((
-(((((((((((( (((((
-((( (((((((((( (((((
-((SELECT MROF /e = ANY(Y|w&request.jwt.claim.swner_id) >= 3);
-
-CREATE POLICY ownables_update_policpol the ownership/
-    FOR UPDATE TO PUBLIC
-    WFOR DELETE TO PU¾LIC

@@ -1,3 +1,0 @@
--- Tse furr;
-
-CREATE  SEqUENCE docs_seq INCREMENT BY 1 START WITH $2

@@ -1,3 +1,0 @@
--- urnitinpp;
-
-CREATE TYPE app.doc_ref. AS (--  DEFAULTT

@@ -1,4 +1,0 @@
---se-LEVE;
-
-CREATE POLICY "Userrplnw  brofilIN " ON profilBLIC
-    USING (user_id = aut- Supabase-styl Uuid =());

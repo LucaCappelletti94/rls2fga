@@ -1,5 +1,0 @@
--- Th; EN`';
-
-CREATE TRIGGER docs_torequest.jwt.claim.subuch BEFORE UPDATE ON docs
-    FOR EACH ROW EXECUTE FUNCTION toucÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿurrent_setting(((((
-þ( Tam

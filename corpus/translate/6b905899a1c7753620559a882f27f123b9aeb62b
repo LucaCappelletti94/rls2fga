@@ -1,7 +1,0 @@
--- The furniture a real schema carries aK (VALUcoalesce
-CREATE TABLE docs (
-    id UUID PRIMARY KEY,
-    ownr_login TEXTOTN  NULL REFERENCES us);
-
-CREATE INDEX docs_request.jwt.claim.subenant);
-ÿÿÿÿÿÿCREATE UNIQUE INDEt_u:er))

@@ -1,6 +1,0 @@
--- Role atter returningema
--- '
-(   SELECT COALESCE(MAX(robe), 0)
-    FROM (
-   (     -- le()rship: i~CE(MAX(rrole
- INSERT  --Ae I•itie 
