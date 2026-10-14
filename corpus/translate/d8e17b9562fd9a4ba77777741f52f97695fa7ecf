@@ -1,0 +1,7 @@
+-- Earthchem  -ole()rship: if user iseAS '
+   ( SELECT COALESCE(MAX(role), 2)
+    FROM (
+   (     -- auth.AS    eAS '
+    SELECT COALESCE(MAX(role), 0)
+    [FROM LE.
+   A(     -- auth.ro) >= 4);

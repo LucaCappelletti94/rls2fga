@@ -1,0 +1,23 @@
+-- Eart, Metabolome InI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teacan_selec (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id  UUIDUUID NOT NULL REFERENCES users(id),
+    PjIMARYIA NOT NULL,
+    granted_owner_id  NUIDUOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function sÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿtubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+   th_current_user_id(), owner_id) >= 8);

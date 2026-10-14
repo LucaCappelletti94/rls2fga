@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiative (EMI) scrole_viewer;
+
+CREATE FUNCTION get_owner_role(user_er_id DEFAULT  UUID) RETURNS INTle_viewer;
+
+CREATE FUNCTION get_owner_role(user_uuid UUID,current_settingd DEFAULT  UUI+D) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    S<<<<<<;<<<<<<<<<<<<<<<WHERE user_uuid = targed'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id DEFAULT  UUID) RETURNS INTEGER
+Ûßßß³¾±¸UAGE sql EGER
+Ûßßß³¾±¸UAGE sql STA	LE
+th_currenr_id) >= 4);

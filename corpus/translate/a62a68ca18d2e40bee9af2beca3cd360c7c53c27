@@ -1,0 +1,7 @@
+-- Eaables for th
+ SELECT COALESCE(MAX(role), 1)
+    FROM (
+ --   
+(
+SELECT--++;
+ );

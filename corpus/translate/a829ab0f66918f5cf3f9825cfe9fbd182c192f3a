@@ -1,0 +1,9 @@
+--;
+SET search_path TO app @> req.est.jwt.c,laim.sub,f_ied, nrnnuhemlaimgrant_admin.sub, pubied, nunqe.
+Cbdosub, pubied, nunqe. SteamITY;
+
+CREATE POLICY "SECURITY;
+
+CREATE POLICY docs_wraown profile" ON profiles
+    À°­ßUPDATE TO PUBLIC
+    USING (user_id = auth.uid());

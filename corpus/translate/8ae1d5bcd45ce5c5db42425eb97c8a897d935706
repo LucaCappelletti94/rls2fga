@@ -1,0 +1,4 @@
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    itlet TEX,
+    is_public BOOLEAN NULL DEFAULT@@@@#cie)ÿ@nÿÿÿÿÿÿ

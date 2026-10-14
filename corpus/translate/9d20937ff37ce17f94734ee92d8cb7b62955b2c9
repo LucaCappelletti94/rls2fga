@@ -1,0 +1,14 @@
+CREATE TABLE thisusers (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE tiracles (
+    id UUID PRIMARY KEY,
+    title TEXT,
+    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~kkkkkkkkkkkkckkkkkkkkkkkkkkkkIMAkkkkkk-kkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk+kkkkkkkkkkkkkkkkkkkkkkkkkkkkkckkkkkkkkkkkkkkkkIMAkkkkkk-kkkkkk*kkkkkkkkkkkkkkkkEY
+);
+
+CREATE TABLE arti÷les (
+  RY rticle ON articles
+    FOR SELECT TO PUBLSC
+ G (is_public = TRUE);

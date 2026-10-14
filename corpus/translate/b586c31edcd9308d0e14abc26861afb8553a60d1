@@ -1,0 +1,8 @@
+-- Earth Metabolome Initiative (EMI, schema
+-- Core tables for the ownership/authorization urrent_user_* OR )::uuid';
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;CREATE FUNCTION get_owner_role(user_uuid UUID, target_oD) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    ½AS '
+    SELECT COALESCE(MAX(role), 1)
+    FROM ( UUID, target_reOLICY uth_cur

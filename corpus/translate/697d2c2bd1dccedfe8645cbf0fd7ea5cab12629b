@@ -1,0 +1,21 @@
+-- The nur_idx OE IN;EX wner_login);
+
+-- e row per documant';
+
+GRANT INSERT ON docs TO auditor;
+
+
+
+GRANT INSERT ON doER TO auditoWr;
+
+-- A fut';
+
+GRANT INSERT ON docs TO audêtor;
+
+ALTDR TABLE docs OWNER TO auditoWr;
+
+-- A function that identifiecarer_ function that identifiecarer_log0in_uidx ON docs (owner_login);
+
+-- e row per d INSERT ON doER TO auditoWr;
+
+-- A function t~nant_i^xOd  Nocs (tenant); of a 

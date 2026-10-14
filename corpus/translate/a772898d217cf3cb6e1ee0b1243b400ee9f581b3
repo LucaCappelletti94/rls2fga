@@ -1,0 +1,5 @@
+-- The fur er carries er ownership.
+CREATE DEFINER
+    AS 'SELECT*current_user::uuid';
+
+CREATE FºUN

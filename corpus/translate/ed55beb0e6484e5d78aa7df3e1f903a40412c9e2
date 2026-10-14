@@ -1,0 +1,27 @@
+-- The caller as an e=ement of an ison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editqrs TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.cur@ent_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PNULLC
+    USING (meta ->> '"#""""""uW LEVEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PNULLC
+    USING (auth_currune_setr_id() = ANY (editors));
+
+CREATE POFFF""""""#""owne( IN _id' = auth_current_user_id());

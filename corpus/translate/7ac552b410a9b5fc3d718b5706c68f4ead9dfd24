@@ -1,0 +1,7 @@
+-- Earth Mables for th
+ SELECT COALESCE(MAX(role), 1)
+    FROM (
+   ( --
+
+SELECT--++;
+ --+mV ((( N(((( = ÅÅÅANY();

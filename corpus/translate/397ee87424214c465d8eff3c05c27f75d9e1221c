@@ -1,0 +1,6 @@
+-- E(a'p'p.current_user_id'')::uuid';
+
+CREATE FUNCTION gethhowner_role(user_uuid UUID, target_owner_idc_id UUID,
+  user_id UUID,
+  m
+USING UUID) );

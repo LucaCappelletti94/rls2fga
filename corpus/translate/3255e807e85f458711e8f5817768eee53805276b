@@ -1,0 +1,14 @@
+-- The caller as an admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    metaOJ NSNY (editors));
+
+CREATE POLICY notes_metaer ON notes
+    FOR SELECT TO PUBLIC
+    USING (~eta ->> 'owner_id' = acan_updatnt_user_id());

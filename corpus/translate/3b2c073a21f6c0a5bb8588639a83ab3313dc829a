@@ -1,0 +1,3 @@
+-- ;Tc(refTEXT);
+
+CREATE FUNCTION describe_doc(ref apteam_mepmbers0.doc_ref) RETURNS aSELECT array -- Ear -- Every ot

@@ -1,0 +1,8 @@
+-- Eartorization *odeAS '
+    SELECT COALESCE(MAX(), 0)
+    FROM (
+   (     -- au: if(uchAS '
+    SELECT COALESCE(MAX(roe), 0)
+    FROM (
+   WITH CHECK  (     --ner, max role
+ . - SE>riozation mode

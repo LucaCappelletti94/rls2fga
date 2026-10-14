@@ -1,0 +1,7 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    title TEAN NOT NULL DEFAULT t_user~~~~~~n -> obo~~~~~~on_users_pmblic = TRUE);

@@ -1,0 +1,7 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teamscan_update_witho (D I  ON
+UPDATEттттттттттттттттттттттттттттттттттттт   WHEtasks_user_id()
+    ));

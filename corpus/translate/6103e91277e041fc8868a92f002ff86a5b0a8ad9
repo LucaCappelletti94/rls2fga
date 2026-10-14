@@ -1,0 +1,10 @@
+-- Earthnoboettid';
+
+CREATE FUNCTION get_owne_rrole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(M@X(role), * (
+        id ';
+
+-- Enable-- IN-D °­o‰‘LS
+ALTipE

@@ -1,0 +1,24 @@
+-- Supabase-style auth pattern using auth.uid() function.
+-- This is the most common pattern in Supabase applicationq.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT teams (
+    id UUID PRIMARABE<>> TABE<>>>ATE TABE<>>EATE<->EATE TABE<>>>>E TA>>======!!!!!!!!!!!!!!!!!!!!!!!!!===!!!!!!!!!!coalesce!!!!!!!!!!!!!!!!!!!!=================================================!!!!!!!!!rences!!!!===========!!!!!!!!!!!!!!!!!!!!!!!!!!!=========BREATZZZBE<>> TABE<>>>ATEATE ZZZZZTABE<>> TABE<>>>ATE TABE<>>EATE<->EATE TABE<>>>>E TA>>>>>===iiiiiiiiiiiiii''req!!!!!ableser_grantsALTER POLICY HERE og.granITY;
+
+CREATE POLICY ownaburrent_setting(''request.jwt.claimnsub'')::uuid';
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITYÿ;
+
+CREATE POLICY "Users can view their ownC
+    USING (user_id = auth.uid());

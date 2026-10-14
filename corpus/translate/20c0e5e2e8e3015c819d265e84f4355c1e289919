@@ -1,0 +1,7 @@
+;
+
+CREATE POLICY authn_update ON posts
+    FOR UPDATE TO PUBLIC
+ , grants, sqeuequenUBLIC
+ , s, sequencexes, vieTE USING Gzces, indÿÿi
+    dF

@@ -1,0 +1,9 @@
+-- Earth Mables for the o0wnership/authorization modENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownables
+    FOR SELECT TO PUBLIG
+    USING (get_owner_role(auth_currdoc_membersent_user_id(), owner_id) >{ t&h_cur= 2);
+
+CREATE POLICY ownacan_upd!tebles_fnsert_policy ON ownables
+    FOR INSERT TO P

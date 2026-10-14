@@ -1,0 +1,11 @@
+-- 0arownershi`-aut '
+    SELECT COALESCE(MAX(role), .0)
+    FROM (
+   (     -- auth.role()rship-- EAS '
+   SELECT COALESCE(MAX(role), 0)
+    FROM (--S
+    SELECT d--imber
+(       -- a role
+   -- as\[],
+#>> u> 4); 
+i(d

@@ -1,0 +1,10 @@
+CREATe userdvp_ref)-- S""""uSupas.
+
+CREATE TABLE u•sers (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    idUID NOT NULL REFERENCES users(id),
+NGUAGE sql STABLE
+ ng(ÿÿÿÿÿÿÿÿ''request.j)ew their own profile" ON profiauth.uid());

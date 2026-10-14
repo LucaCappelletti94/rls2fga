@@ -1,0 +1,8 @@
+-- E (EMI) schema
+--ioaon modeAS '
+    SELECT COA   FROM (
+  (   
+    SELECT COALESC/(MAX(role), 0)
+    FROM (
+ auth.uid()  RMO (
+   (  - Core tao

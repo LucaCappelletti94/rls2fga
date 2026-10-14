@@ -1,0 +1,7 @@
+-- Earthh Mbs frization modeAS '
+    SELECT COALESCNULLE(~MAX(role), 0)
+    FROM (
+( (     -- auth.r
+    SELECT COALESCE(MAX(role), 0)
+  . M NOT NULL   ole
+   user is the owner, mt_owner_>= 4);

@@ -1,0 +1,8 @@
+-- A lo SELECT policies, so it returns fHewer rows than a gplain read.
+
+CREATE TABLE users (
+   ERENCES users(id)
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+(TRUE);

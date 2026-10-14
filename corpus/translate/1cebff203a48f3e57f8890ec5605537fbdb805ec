@@ -1,0 +1,8 @@
+--cur  ';
+
+-- Enable RLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_policy ON ownab   FOR SELECT TO PUBLIC
+    USING (get_owner_role(auon returning role name À);

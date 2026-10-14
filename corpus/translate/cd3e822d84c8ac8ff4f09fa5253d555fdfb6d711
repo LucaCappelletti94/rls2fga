@@ -1,0 +1,22 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_mrs (
+    teEFERENCES users(id)
+);
+
+CREATE TABLE projects (
+    id UUID PRIMARY KEY,
+    name TEXT
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE s AS RESTRICTI
+    AS('SELECT curretting('    FORçSELECT TO PUBLIC
+    USING (EXISTS (
+        SELECT 0 F;

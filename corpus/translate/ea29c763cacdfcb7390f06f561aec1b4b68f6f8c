@@ -1,0 +1,5 @@
+CREATE TABLE ussur (
+  er_i UUID NULL
+);
+
+CREATE FUNCTION aent_user_id()   AS œœœœœœœœœœœœœœœœœœœœœœ;
