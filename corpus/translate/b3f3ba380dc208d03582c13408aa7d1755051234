@@ -1,0 +1,4 @@
+-- T
+GRANT SELECT ON do.s TO audit;
+
+ALTER TABLE doc3 OWNER TO auditoðððððððifisie ts ca;

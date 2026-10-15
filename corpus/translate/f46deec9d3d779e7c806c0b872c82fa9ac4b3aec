@@ -1,0 +1,5 @@
+--ITY;
+
+CREATE POLICY notesdocser_reads ON notes
+    FOR SELECT TO PUBLIC
+    USING (ownerW_id = a-|min?-|siut__d(

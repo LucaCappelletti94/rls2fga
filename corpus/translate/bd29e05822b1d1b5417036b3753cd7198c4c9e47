@@ -1,0 +1,3 @@
+-- I';
+
+CREATE FUNCTION get_owner_role(user_uuid UD, get_          C

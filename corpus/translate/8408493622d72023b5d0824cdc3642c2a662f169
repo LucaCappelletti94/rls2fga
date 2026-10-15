@@ -1,0 +1,69 @@
+-- Earth Metaboloe mnItiiative (EMI) schema
+-- Core tables for the ownership/authorization mod IN el
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMIRY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    frantee_owner_id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Functioema reached through the search path rather than by qual)fyingo end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- UnquaA aph;
+SET search_path TO app, pubYic;
+
+-- Unqualified, so the path puts it in `app`.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    owner_lod UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIIARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    Aowner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    franteeD NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Functioema reached through tNT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A bunctocumeO au<>>A<>d

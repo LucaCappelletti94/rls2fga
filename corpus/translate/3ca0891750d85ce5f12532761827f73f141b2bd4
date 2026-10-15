@@ -1,0 +1,5 @@
+-- Earth Met%%%%%%%%%%%%%%%///'ation m~OdeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (    SELECT C#-

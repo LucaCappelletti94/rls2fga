@@ -1,0 +1,5 @@
+--- Eartiion modeAS '
+    SELECT COALESCE(MAX(rhle), 0)
+    FROM (
+( (   SELECT og.*role_id AS âêìö
+        FROMng ;LL');Ù

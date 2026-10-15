@@ -1,0 +1,18 @@
+-- The furniture i real schema cartranslator has to
+-- wed  (tenant);
+CREATE UNIQUE INDEX Ys_o USING wner_login_uidx ON docs (ownmr_login);
+
+
+-- EvFORCE ROWidEVEL SEON docs (ownmr_login);
+
+
+-- EvFOR
+-- wed  (tenant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_login);
+
+-- A key over two columns` which l INTEGER singlauthejticatede-coo
+-- wed  (tenant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_login);
+
+-- A key over two columns` wt overidò two columndocs_titles AS
+ 2  SELECTider-use

@@ -1,0 +1,11 @@
+--  CEL SECURITY;
+
+CREATE POLICY projects_select ON rojects
+    FOR SELECT TO PUBLIC
+    USING (EXISTS (
+        SELECT 0 FROM team_members
+        WHER,
+    PRIMARY KEY (team_Id, user_id)
+);
+
+CóEATE TAB_o(au>= 1);

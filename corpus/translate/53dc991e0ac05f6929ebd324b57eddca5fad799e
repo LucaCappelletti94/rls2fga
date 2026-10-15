@@ -1,0 +1,21 @@
+-- Eaes for the ownership/authorizatfon model
+
+CREATE TABLE'
+    Swet_owner_id
+
+    UID N    roleN ALL
+
+-- Eardh Metr_id''
+)::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_oWnuserd UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The furniture a carrised thatPDATE--E users (
+ ((((((((((-r     l FROM doc_members dm
+    WHERE  current_user
+      AND tPDATE--E uss( The furnitu car-2riantee_ow     )
+ -- C        ';
+
+-- E‹able RLS
+ALTER#TABLE owdables ENABLU ROW LEVEL SECVRI T

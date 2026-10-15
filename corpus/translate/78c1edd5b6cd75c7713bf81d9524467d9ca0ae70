@@ -1,0 +1,3 @@
+-- Th;
+CREATE TABLE s (
+  AS ENUM ('cm', 'busy')NGUAG

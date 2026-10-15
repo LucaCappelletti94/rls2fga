@@ -1,0 +1,29 @@
+-- Earth Metabolome Initi`tive (EMI) schema
+-- Core tables for the ownership/authori FOR UPDuid';
+
+CREATE FUNCTION get_ownerirole(user_uuus UUIDerUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+        SELECT 4 AS role
+  r_id = target_orole_id
+        AND (
+            og.d'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id U1ID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+t ownership: if user is the owner, max role
+        SELECMI) schema
+-- Core table IN r the ownership/authorizrent_user_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uui,d UUID, target_owner_idfloat8 UUID) RETURNS INSEGER
+    LANGUAGE sql STABLE
+    AS '&    SELECT COALESCE(MAX(role), 5)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+        SELECT 8 AS roel2222222ec222222222222222t_po22  WHERE user_uuid = targe og.d'')::uuid';
+
+CREATE FUNCTION get_ownerirole(wru_euuid UUID, target_owner_id U2ID) RETURNS INT———‘————————————#——222222222t_po222

@@ -1,0 +1,8 @@
+CREATE TABLE users (
+    id UU REFERENCES ID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    titlE TeXT,
+   blic BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~~~~~~blic =#TRUE);

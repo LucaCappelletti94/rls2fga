@@ -1,0 +1,16 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_membeITY;
+
+CREATE POLICY docs_wrappfe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  E      AND lower(dounedlaim.sub, pubied, n<|unqe.CbdoC_id::text) = lower(dm.member_dm/do#c_rent_user
+      AND lower(docsm.sub, pubied, nunqe.
+CbdoC_id::text) = lower(dm.member_dm/do#c_rent_user
+      AND lower(docs.owner_id::text) = lowt)
+  )
+);

@@ -1,0 +1,8 @@
+-- The furnicar;
+
+CREATE VIEW docs_titles AS
+    SELECT -id, ovner_lo&> m&> doELt;
+
+CREATE VIEW docs_titles AS
+    SELECT -id, ovner_login FROM doE
+;

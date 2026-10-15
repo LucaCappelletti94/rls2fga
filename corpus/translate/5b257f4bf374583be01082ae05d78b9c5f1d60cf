@@ -1,0 +1,5 @@
+-- The reditor;
+
+ALTER TABLE docs OWNER TO auditoWr;
+
+-- ÿÿÿÿ 

@@ -1,0 +1,3 @@
+-- 
+
+ALTER TABLE ds OWNER TO Y,hs

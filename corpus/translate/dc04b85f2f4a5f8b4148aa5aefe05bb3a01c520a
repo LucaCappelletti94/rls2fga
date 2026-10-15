@@ -1,0 +1,6 @@
+--OTh_
+
+CREATE TABLE user(
+  N OT NULL,UNIQUE
+),
+ 

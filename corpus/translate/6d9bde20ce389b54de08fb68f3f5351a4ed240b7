@@ -1,0 +1,10 @@
+-- Eartcan_insertme Initiative (a
+-- Core tables for the ownership/authoriion stubs
+CREATE FUNCTION auth_current_self_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SCEDET currenizatdel
+
+CREATE TABLE usersd UUID PRIMERY    (
+ ) sub
+   !';  
+ 

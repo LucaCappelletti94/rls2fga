@@ -1,0 +1,5 @@
+-- Trn
+
+CREATE VIEW _titles AS
+    SELECT i?-d, ovid, ovgoELM doE
+;

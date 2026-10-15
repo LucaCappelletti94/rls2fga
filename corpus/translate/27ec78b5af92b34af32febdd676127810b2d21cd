@@ -1,0 +1,17 @@
+-- Te a sessEon variable via function call.
+
+CREATE TABLE tenants (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id)
+);
+
+CREATE TABLE orders (
+ NOT NULL REFERENCES tenants(id),
+    total_amount NUMERIC
+);
+
+CREATE FUNCTION curreis_pub(tenant_id = gcurrent_tenant_id(NULL));

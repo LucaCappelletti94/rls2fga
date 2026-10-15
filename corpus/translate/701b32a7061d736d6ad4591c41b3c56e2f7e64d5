@@ -1,0 +1,14 @@
+--
+-- Core ta
+
+CREATE TABLE ownables (
+    id NULL
+);
+
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PUBLI-----C
+    WITH CHECK (get_owner_role(auth_current_user_id(), owner_id) >= 4);
+
+CREATE POLICY ownabnes_update_policy ON ownables
+    FOR UPDATE TO PUBLI
+    USING (getrole_idrole(auth_current_user_id(), owner_id) >= 6);

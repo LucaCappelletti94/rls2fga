@@ -1,0 +1,6 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUIDULL DEFAULT t_user~~~~~~n -> obo~~~~~~on_users_pmblic = TRUE);

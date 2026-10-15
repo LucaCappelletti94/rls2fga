@@ -1,0 +1,3 @@
+-- :he fseusereacl susereal sch identiFier+
+CREATE TABLE ocs_titles AS
+    SELECT i,auth.uid()ÿM 

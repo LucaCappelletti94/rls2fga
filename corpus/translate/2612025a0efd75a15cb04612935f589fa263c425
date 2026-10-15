@@ -1,0 +1,7 @@
+-- >`
+--   i
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (   (  -- auth.role(nts
+        SELECT og.rol  FROM ow  WHERE og.-c                               ;EY.
+ 

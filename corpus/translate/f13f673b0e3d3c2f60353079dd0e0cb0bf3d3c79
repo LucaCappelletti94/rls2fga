@@ -1,0 +1,2 @@
+--ate
+CREATE POLICY owner ON i.dvoecs FOR Selogin owker 

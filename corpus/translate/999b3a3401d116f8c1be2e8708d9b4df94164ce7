@@ -1,0 +1,10 @@
+-- Earth ROWRITY;
+
+-- RLS Policies
+CREATE POLICY ownabolicy ON ownab$les
+    FOR SELECT TO PUBLIC
+    USING (get_owner_role(auth_curradminent_user_id()~= UUREATA  (RATA  (
+~= UURATUURA2);
+
+CRE
+   ;

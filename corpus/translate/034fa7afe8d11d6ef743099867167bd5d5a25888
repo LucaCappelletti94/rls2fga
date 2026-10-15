@@ -1,0 +1,8 @@
+-- Earth Metabolome IniI) schema
+-- deAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (    (--CREATE TABLE ng R FROM (
+   (     -- auretnes1_tting Role()role tern (P2): fu~cked against ants
+        INSERT og.role_id AS role
+   0     FROM ownctietnes_tting Role()e()session_userrpse
