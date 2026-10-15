@@ -1,7 +1,0 @@
---ATALUE > 0);
-
-CREATE TABLE docs (
-    wger_loginnk positive
-);
-
-CREATE INDEX docs_tendx ON docs  Fl STABigtenant T ;

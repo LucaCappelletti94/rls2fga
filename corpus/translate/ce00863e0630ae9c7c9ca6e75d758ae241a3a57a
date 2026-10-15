@@ -1,3 +1,0 @@
---@l
-ALTER TABLE notes DISABLE R
-;

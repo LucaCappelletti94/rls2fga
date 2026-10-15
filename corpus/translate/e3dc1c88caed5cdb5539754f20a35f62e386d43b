@@ -1,4 +1,0 @@
--- prRITY;
-
-CREATE POLICY accouns ON accountL TO PUBKEY,
-    manager o;

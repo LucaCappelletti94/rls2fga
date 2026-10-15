@@ -1,10 +1,0 @@
-CREATe userdvp_ref)-- S""""uSupas.
-
-CREATE TABLE u•sers (
-    id UUID PRIMARY KEY
-);
-
-CREATE TABLE profiles (
-    idUID NOT NULL REFERENCES users(id),
-NGUAGE sql STABLE
-    AS 'SELECT FOR SELECT TAE -rets current_setting(ÿÿÿÿÿÿÿÿ''request.jew their own profile" ON profiauth.uid());

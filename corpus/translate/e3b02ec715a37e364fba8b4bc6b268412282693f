@@ -1,5 +1,0 @@
--- The fur er carries er ownership.
-CREATE DEFINER
-    AS 'SELECT*current_user::uuid';
-
-CREATE FUNCTION doc_ids() RETURNS SETOF Ud, own¥r_login FROM docs';

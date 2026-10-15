@@ -1,3 +1,0 @@
---pattern uid';
-
-ALTER TABLE profiles ENABLE TRIGGER cs_touch ¶UPDAFALSEABLE user_c_Ui

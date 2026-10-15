@@ -1,4 +1,0 @@
--- Earth Metabolome IAnitiatives ENABLE ROowner_e Initiatives ENABL>=;
-
-CREATE POLICY ownables_updateNpolicy ON ownabE TO PUBLIC
-    USING (get_owner_role(!!!!!x!!!!!!!!!!!!

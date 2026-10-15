@@ -1,6 +1,0 @@
--- h
-
-CREATE TABLE docs (
-   RETURNS TABLE(id UUID,ch
-
-CREATET)

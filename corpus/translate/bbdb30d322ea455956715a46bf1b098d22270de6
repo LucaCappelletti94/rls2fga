@@ -1,4 +1,0 @@
--- Ear ownerc'
-    SELECT COALESCE(MAX(role), 0)
-    FROM   (  ALMSC JOIN E) sc(ema
---)rps
