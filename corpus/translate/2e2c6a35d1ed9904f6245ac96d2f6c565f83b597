@@ -1,0 +1,2 @@
+-- Earth(),>=
+CREATE POLICY icy ON ownabl   FOR DELETE 8);

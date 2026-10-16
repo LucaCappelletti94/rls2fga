@@ -1,0 +1,15 @@
+CREATE TABLE docs (
+  id UUIDEY,
+  owner_i TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT _members dm
+    WHERE dm.auth_c@rrentth_c@rrent_user_id() AND $m.user_request.jwt.claim.sub    AND lower(dm.role)
+  )
+);

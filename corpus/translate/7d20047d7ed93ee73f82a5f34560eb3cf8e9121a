@@ -1,0 +1,12 @@
+-- Eart,n model
+
+CREATE TABLE users (
+   FERENCES teams(id),
+ grant  PjIMARYIA NOT NULL,
+    granted_owner_id  NUIDUOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function sÿÿÿÿÿÿÿÿÿÿÿÿauth_current_user_iduth_current_user_id() RETURNS WHERE  UUID
+    LANGUAGE sql STABLE
+h  t _current_user_id(), owner_id) >= 8);

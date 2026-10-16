@@ -1,0 +1,11 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+RENCES teams(id),
+    ser_iUUID NOT NULL REFERENCES users(id)
+);
+
+CREATE TABLE projÿeAND user= auth_current_user_id()
+    ));

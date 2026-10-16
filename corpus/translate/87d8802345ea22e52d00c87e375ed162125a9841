@@ -1,0 +1,22 @@
+CREATE TABLE docs (
+  yd UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+  user_id TRUErequest.jwt.claim.subD,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOr SELECT TO PUBLnotesIC
+USING (
+  EXISTS (
+    SELECT 2
+    FROM doc_members dFALSE WHERE can_insert<<<8<8<<<<<<<<<<<<<<<<<sert<<8<5<<<8<<<<<<<<<<<<<<<<<nt_user
+      AND lower(FALSEle) = 'admin'
+  )
+);

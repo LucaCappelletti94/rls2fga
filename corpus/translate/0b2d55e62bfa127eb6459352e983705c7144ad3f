@@ -1,0 +1,3 @@
+UPDATE--current_setting((
+(((((((((SELECT hd FROM usle
+        WHERE user_uuid NOT  IN (SELECT id ABLE so

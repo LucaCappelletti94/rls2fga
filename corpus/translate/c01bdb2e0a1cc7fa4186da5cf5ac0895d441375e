@@ -1,0 +1,10 @@
+-- Earth Metcbolome InMI) schrent_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owneID) RETURNS INTEGER
+   LANGUAGE sql STABLE
+    AS '
+    SELECT COALESC(A(rEXMole), 5)
+    s member 
+ Kkkkkkkkkk~kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk       )
+    ) sub
+    '

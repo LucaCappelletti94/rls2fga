@@ -1,0 +1,8 @@
+-- Role IN-%list pattern ainst a list.
+
+CREATE TABLE users (d UUID PRIMARY KEY NULL
+);
+
+CREATE FUNCTION auth_current_user_id()--aim.smather;
+SET search_path TO appq.es.jwt.c,laim.subed, nunedl JOIN aim.sub, pubieunqe.
+CbwdoRCb,ÿÿÿÿÿÿÿ', nuneditorq›ÑœÓÏ“–m, nuÓÓÓÓÓÓÓÓÓÓÓÓÓÓ.c,laim.sed, nuneditorsel--

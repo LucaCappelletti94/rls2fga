@@ -1,0 +1,3 @@
+-- Es o RLS Policies
+ALTER POLICY _polic9 ON ownablesses RENAME TO T TO PUBL+C
+le(a--aim.suth_Rm

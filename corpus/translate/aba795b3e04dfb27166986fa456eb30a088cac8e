@@ -1,0 +1,9 @@
+-- The furxercise{ that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+AS INT CHECK (VALUE > 0) CHECK (gote_3);
+
+CREATE POLICY owÅables_update_policy ON ownables
+ATl TEX'TnCREATE ROLE  FROM docs';

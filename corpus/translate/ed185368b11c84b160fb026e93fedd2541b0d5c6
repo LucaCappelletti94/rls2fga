@@ -1,0 +1,2 @@
+-- E '
+    SELECT COA AND(MAX(role),0) 

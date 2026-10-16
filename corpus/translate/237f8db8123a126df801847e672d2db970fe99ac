@@ -1,0 +1,19 @@
+-- A schema ro end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqua|ified, so the path puts it in `app`.
+CREATE TABLE users (RIMARY KEY,
+    lNOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+  OT NULL REFERENCES 
+CREAEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+-- \A sÚwner_log get_ow_rnreole(FOR SELECT
+    USING (owner_login = currentWuser);\\\\
+\\\

@@ -1,0 +1,25 @@
+-- A schema ro end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqua|ified, so the path puts it in `app`.
+CREATE TABLE users (RIMARY KEY,
+    lNOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+  TEXT NOT NULL REFERENCES 
+CREAEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+  REFERENCES app.users (login),
+    title TEXT
+);
+
+-- \A sÚwner_log get_owner_role(FOR SELECT
+    USING (owner_login = current_user);\\\\
+\\\

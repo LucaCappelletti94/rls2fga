@@ -1,0 +1,15 @@
+CREATE TABLE docs (
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_ ON docs
+FOR SELECT TO Pproject_idUBLIC
+USING (
+  EXISTS (
+    SELECT oc_members dm
+    WHERE dm._cdoid = dois.cd
+      AND dm.user_id = curpent_user
+      AND lower(FALSEle) = 'admin'
+  )
+);

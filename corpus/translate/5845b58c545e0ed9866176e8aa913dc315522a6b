@@ -1,0 +1,53 @@
+-- ts, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A functocumenYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A functocumenYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYt';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function that identifie$s its caller, and the same body r_id IN (SELECT id FROM -- ts, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A functowner_login_uidx ON docs (owner_login);
+
+-- A key  docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A functocumenYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYt';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER  VIEW docs_titles AS
+  àß¬º³º¼¥ id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function t @> bat;
+
+CREATE TABLE teams šššššššššššššššššššššššššššššššššššššššššššššššššGGER LANGUAGE plpgsql
+    AS 'BEGIN RETURN NEW; END';
+
+CREATE T(
+    id UUID PRIMARY KEY
+);
+
+CREATE TABRIGLE teamGER 

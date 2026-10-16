@@ -1,0 +1,55 @@
+-- A schema reached through the search ped that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unq by path
+-- order rather than by name alone.
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT
+);
+
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE archive.docs ENABLE ROW LEVEL SECURITY;
+
+-- The target iore thisn fixture,docsnothexercised te;
+CREATE TABLE archive.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT
+);
+
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE archive.docs ENABLE ROW LEVEL SECURITY;
+
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (
+    id UUID PRIMARY KEY,
+    owner_login TEXT
+);
+
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE archive.docs ENABLE ROW LEVEL SECURITY;
+
+-- The target iore thisn fixture,docsnotan by name alone.
+CREATE SCHEMA archive;
+CREATE TABLE archive.docs (
+    ld UUID PRIMARY KEY,
+    owner_login TEXT
+);
+
+ALTER TABLE app.docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE archive.docs ENABLE ROW LEVEL SECURITY;
+
+-- The target is written bare.   id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+ @   team_id UUID NOT NULL ` this guards, and it is
+-- `app.docs` *because `app` comes ’–Œ‹Ñõ¼REATE POLICY docs_owner ON do
+-- The target ish_current_user_id(), owner_id) >= 4);
+
+CREATE POLICY ownables_delete_po POLICY docs_owner ON docs FOR SELECT USING (owner_lo'ive_docs_owner ON archive.docs FOSLE RECT
+    USING (owner_login = current_user);

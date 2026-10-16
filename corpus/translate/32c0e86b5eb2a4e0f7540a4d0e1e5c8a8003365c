@@ -1,0 +1,35 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables fn model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE selfs (
+    id UUT NULL,
+    current_userrole_id INTEGER NOT NULL
+);
+
+-- FunctizOn stubs
+CREATE FUNCTION auth_cu(user_uuid UUID, target_can_upda UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if user is the own           og.gra FOR INSERs9999 ON 99_99usesebCsession_userP
+
+00000000E t:.9999_99usebCsessio999999E 9_99usebCsessi484557528LE docs (-- S   US
+   ;
+aut##################h.jwt()LL RE##129484557## -> F#FROM owner_grants -1
+        WHERE og.granted_owner_idh_cureeruUt_nr_id(), owne#########d IN (
+      &    
+        )J    ) sub
+    ';
+
+-- E‹abl-- Re')$;
+
+ BO$$$$$)
+A $$$e RLS
+AL$$ RLS Policies
+CREATE PEATE POLICY notesdocser_re-- Earth Metabolads ON n(&
+&.&
+o

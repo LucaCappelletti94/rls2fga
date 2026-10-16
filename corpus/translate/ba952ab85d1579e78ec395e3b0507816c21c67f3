@@ -1,0 +1,15 @@
+-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuidAUUID, target_ownuserd UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The &urniture a carsdrie that.
+UPDATE--E users (
+ (((((((((((UPDATE--E users (
+ ((((((((((( (
+ (((((((((((UPDATE--E us+PDATE--E us+((((((net_o)     LANGUAGE sql STABLE
+    AS '
+-- The furnitur    ';
+
+-- E‹able RLS
+ALTER#TABLE ownables ENABLU ROW LEVproject_idT

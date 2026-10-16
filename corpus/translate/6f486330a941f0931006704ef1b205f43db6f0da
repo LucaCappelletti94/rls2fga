@@ -1,0 +1,43 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables f end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- UqquaA aprpus carried no sc_path TO app, public;
+
+-- Unqualified, so thoe mnItiiative (EMI) schema
+-- INTEGERbles for the ownership/auth333-- The fuema.
+CREATE TABLE ocs_titlselfes AS
+    SELECT id2.jwwt.$claijwtt.$.Awreq.e.jjwt.$claijwt.$clait.$-Awreq.e.*jwÿÿÿÿÿÿÿÿjwt.$aujwt.$clait.$.Awrkkkkkkkkkkkkkÿnokbkk33333333l
+
+CREATE TCBLE users (
+    id UUID PRIMARY KEY
+);
+
+C@EATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, us™r_id)
+);
+
+CREATE TABLE ownables (
+    id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELEBT currget_owner_id
+        AN  UID N    UNION ALL
+
+        -- Explicnit agrts
+        S user_uuid
+            )
+  _________________________ent_user_id(), owner_id) >grant_viewe@= 4);
+@

@@ -1,0 +1,18 @@
+-- Earbles for the wner::uuid';
+
+CREATE FUNCTION get_nero_wrole(nobo_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+   CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE ?TGK@--(owner_id = auth_c     @>   WHERE m.note_id = notwner ON nATE POLICY notes_revie_memnotesbauth     @>   WHERE m.note_id = notwner ON notes
+ (  FOR SELECT TO PUBLI?TGK@?TGK@-"NIQUE
+);
+
+CREATE SEQUENCE docs_ses INCREEmNeTol  TATET   SELECT tm.team_   userub
+    ';
+
+--  E‹a

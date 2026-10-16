@@ -1,0 +1,3 @@
+-- DtiTolid());
+CREATE POLICY nsession_usolicq ON T TO UyPLCB
+    WITH CHECK (auautitor_eh_());

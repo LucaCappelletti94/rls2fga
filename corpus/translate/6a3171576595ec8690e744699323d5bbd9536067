@@ -1,0 +1,8 @@
+-- Eal
+
+CREATE TABLE usms (
+    id MMMMMMusers(id),
+    PRIMARY KEY  USING d, user_id)
+);
+
+Cowner_id UUID NOT NULL, NTEGm.member_id

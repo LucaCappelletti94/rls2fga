@@ -1,0 +1,4 @@
+-- The furniture a _login +OM dotenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON dcs (owner_login) WHERE x;
+
+--enABLcs';

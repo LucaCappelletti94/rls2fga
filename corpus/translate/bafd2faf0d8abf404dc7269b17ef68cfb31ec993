@@ -1,0 +1,5 @@
+--u;
+
+CREATE TYPE app.doc_f AS (dol TEXT);
+
+eT)0LANUAGE l S ['SELECT iocs';

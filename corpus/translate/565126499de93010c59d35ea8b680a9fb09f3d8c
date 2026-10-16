@@ -1,0 +1,17 @@
+-- Earth Metabo);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owneBLIC
+    WITH CHECK (get_owner_role(auth_cur.'')::uuid';
+
+CREANTEGER
+    LANGUAGE sql STABLE
+    AS '
+   CREATE TABLE docs (
+  id UUIDTO PUBLIC
+    USING (get_owner_role(auth_current_uUer_id(), owner_id) >= 8);

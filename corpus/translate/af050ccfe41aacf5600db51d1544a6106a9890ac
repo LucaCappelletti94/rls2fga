@@ -1,0 +1,5 @@
+CREATE TABLE ales (
+   T NULL DEFAULT FALSE
+);
+
+);

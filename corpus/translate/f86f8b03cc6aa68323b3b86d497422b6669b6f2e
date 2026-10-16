@@ -1,0 +1,21 @@
+-- The caller as an element of an ison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_current_useri_d() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''apt_user_id''>';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PNULLC
+    °¬¶ USING ±¸ß×žuth_currune_setr_id() = th_currune_setr_id() = ANY (editors))ATE TABLE POÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ	ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ  FOR SELECTh_currune_setr_id(etr_id() = ANY (editoCREATd' = auth_current_user_id());

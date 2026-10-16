@@ -1,0 +1,2 @@
+CREATE TABLE users (
+    is_public B NULL DEFAULT F~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~cur-ent_user~~~~~~~~~~~~~~~~~~~~~~~~~~~Ac = TRUE);

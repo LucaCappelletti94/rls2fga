@@ -1,0 +1,16 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Co')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_ownearget_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COuuid = target_owner_id
+        AND user_uuid IN (SELECT id FROM users)
+
+   .gra    )
+    ) sub
+    ';
+
+-- E‹able RLS
+ALTER TABLE oer_role(auth_current_user_id(),sert_policy ON ownables
+  =  DOR INSERT );

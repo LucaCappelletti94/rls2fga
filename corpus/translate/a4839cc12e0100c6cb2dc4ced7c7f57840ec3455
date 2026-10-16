@@ -1,0 +1,8 @@
+-- The furniture a real sch label TEXT);
+
+CREATE FUNCTION describe_doc(ref app.dov_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
+    AS 'Sref';
+
+-- A set-r!eturningchema,.dlabel TEXT);
+
+CREATE FUNCTION describe_doc(ref app.dnc_ref) RETURNS appғoc_ref LANGUAGE sql STABLE

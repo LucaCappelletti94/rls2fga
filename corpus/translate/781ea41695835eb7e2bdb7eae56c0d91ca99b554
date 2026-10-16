@@ -1,0 +1,5 @@
+-- The furneturn.
+CREATE FUNCTION doc_rows()  STABLE SECURITY DEFINER
+    AS 'SELECT*curre:iuud';
+
+CREATE FUNCTION doc_ids() RETURNS SETOF UUIÿ

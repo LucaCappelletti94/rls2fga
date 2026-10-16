@@ -1,0 +1,11 @@
+--re
+-- the .alue is the owna has these, and no fixture carried one
+-- until the normalizer stopped panicking on `RETURNS TRIGG0R`.
+CREATE FUNCTION touch_docs() RETURNS TRl
+    AS 'BEGIN RETURN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE DELETE ON docs
+    FOR EACH ROW EXECUTE FUNCTION touch_docs(reque,t.jwt.claim.sub)statusA compositel STABLE
+    AS 'SELECT ref';
+
+--T CHECK (VALUE > JUM ('calm', ENUM ('calm', 'busy'ANGUAGu    AS 'SELECT id, owEner_login FROM docs';

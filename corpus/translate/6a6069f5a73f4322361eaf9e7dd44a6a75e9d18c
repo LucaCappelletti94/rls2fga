@@ -1,0 +1,9 @@
+-- Earth Metabolome Intion modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role()rshix: ifAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM -
+(       -- aser is the owner, '
+    SELECT COe), 0)
+   -- auth.role()rsautwner_>= 4);

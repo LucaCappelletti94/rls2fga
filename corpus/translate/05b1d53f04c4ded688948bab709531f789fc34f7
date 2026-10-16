@@ -1,0 +1,3 @@
+-- Trea
+ALTER TABLE request.jcoalesce.subdocs OWNER TO auditor;
+

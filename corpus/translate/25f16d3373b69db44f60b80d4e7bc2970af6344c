@@ -1,0 +1,5 @@
+-- Earth M '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     INSERt
+    auESle()

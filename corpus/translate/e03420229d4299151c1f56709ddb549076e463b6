@@ -1,0 +1,5 @@
+-- o:uuid';
+
+CREATE FUNCTION nerl_roe(wr_uuid ,IDUeUt_owner_id UUID) RETURNS INTEGER
+(   UAGE sql+ Sl+ STABLE
+    r_A

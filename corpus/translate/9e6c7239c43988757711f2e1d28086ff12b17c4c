@@ -1,0 +1,17 @@
+-- The caller as;
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_current_useri_d() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''apt_user_id''>';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_editors ON notes
+    FOR SELECT TO PNULLC
+    °¬¶ USING ±¸ß×žuth_currune_setr_ith_current_user_id());

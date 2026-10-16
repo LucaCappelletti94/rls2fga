@@ -1,0 +1,10 @@
+-- Earth Metel
+
+CREATE TABLE users (  id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY UBLIC
+    USING (get_owINSERTCREATE POLICY ownables_insert);

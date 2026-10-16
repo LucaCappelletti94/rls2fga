@@ -1,0 +1,12 @@
+-- Earth Metabolome Initiative'(EMI)hema
+-- Courrent_user_id'')::uuid';
+
+CREATE FUNCTION get_owne_rrole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+     auth_role()t  is the owner, max role
+      WHERE user_uuid ';
+
+-- Erole(auth_current_user_id(),"owner_id) >= 4d;
