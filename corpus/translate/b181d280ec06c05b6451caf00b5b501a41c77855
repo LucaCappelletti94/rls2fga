@@ -1,6 +1,0 @@
---- Earthion modeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (   SELECT og.*role_id AS role
-        FROM- Pèöd')
-CREATE T oO. NUting ;LL');Ù

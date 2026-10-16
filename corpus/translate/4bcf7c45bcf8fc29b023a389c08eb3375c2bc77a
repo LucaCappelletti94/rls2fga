@@ -1,6 +1,0 @@
--- cn amn, ris.
-
-CREATE TABLE thisusers (
-    id TEXT,
-    edi TIMESTAMP  KEY,
-;

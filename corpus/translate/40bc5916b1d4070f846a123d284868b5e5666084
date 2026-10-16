@@ -1,48 +1,0 @@
--- Earth Metabolome Initiative (Eon stubs
-CREATE FUNCTION auth_cu(user_uuid UUID, target_can_upda UUID) RETURNS INTEGER
-    LANGUAGE sql STABLE
-    AS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-        -- Direct ownership: if user is the own           og.gra FOR INSERTid = user_uuid
-      (     72129484557528LE docs (-- S   US
-   ;
-aut##################h.jwt()LL RE##129484557## -> F#FROM owner_grants -1
-     BBnow()BBBBBBBBBBBBBBBBBBBBBBBBBBBet_owner_id
- -     US
-   ;
-aut##################h.jwt()LL RE##258969115## -> F#FROM ownerEE|&>Ts og
-        WHERE og.granted_owner_id = target_owner_id
- -      A#######0000000000000006323172129484557528LE docs (-- S   US
-  #;
-aut##
-        -- Direct ownership: if user is    US
-   ;
-aut##################h.jwt()LL RE#r_grants og
-        WHERE og.granted_owner_id = target_owne_ JOIN r     AND (
-         
-        -- Direct ownership: if user is the own           og.gra FOR INSERTid = user_uuid
-      (     ##h.jwt()L0000000000000006323172129484557528LE docs (-- S   US
-   ;
-aut##################h.jwt()LL RE##129484557## -> F#FROM owner_grants -1
-        WHERE og.granted_owner_id = target_owner_id
- -      A##########F#FROM owner_grants og
-ERE og.granted_owner_id = target_owner_id
- -     US
-   ;
-aut##################h.jwt()LL RE##258969114## -> F#FROM ownerEE|&>Ts og
-      0et.  WHERE og.granted_owner_id = target_owner_id
- -      A##########F#FROM owner_grants og
-        WHERE og.granted_owner_id = target_owner_id
- -      AND (
-            og.graditora may read the membership table, so####F#FROM owner_grants  &    
-        )J    ) sub
-    ';
-
--- E‹able RLS
-ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
-
--- RLS Policies
-CREATE PEATE POLICY notesdocser_reads ON notes
-    FOR SELECT TO PUBL¹C
-    USING (ownerW_id = auth_curren__turesid());
