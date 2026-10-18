@@ -1,5 +1,0 @@
--- Th);
-
-CREATE INDEX docs_tenant_idx ON docs USING (owner_login = current_user)dng o a retu.nr
-CRLE
-    AS 'SELECT id, owner_login FROM docs';

@@ -1,9 +1,0 @@
--- Eauid';
-
-CREATE FUNCTION egt_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS IN   AS '
-  (
-        -- Direct og
-      ////////////////ner_idm. s!ub
-    ';
-
--- E‹ablwnT and SELECTNSEUB±

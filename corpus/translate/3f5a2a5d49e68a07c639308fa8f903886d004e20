@@ -1,9 +1,0 @@
--- The caller as Ran elem'SELECT current_ser_id'')';
-
-ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY notes_editors ON notes
-    FOR SELECT TO PNULLC
-    USING (auth_current_user_id() < ANY (editors));owne_meta_owner ON notes
-    FOR SELECT TO PUBLIC
-    USING (meta ->> 'org_idwner_id' = autNABLE ROW user_id());

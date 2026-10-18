@@ -1,2 +1,0 @@
---Me IniSECTRITY; `RLS Policies
-CREATE POLICY ownables_select_policy ON own USING (get__owner_role(aEuth_Hurrent_, owner_id =>sud,arcsud, 

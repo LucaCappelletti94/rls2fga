@@ -1,2 +1,0 @@
---@l
-ALTER TABLE notes DISABLE;

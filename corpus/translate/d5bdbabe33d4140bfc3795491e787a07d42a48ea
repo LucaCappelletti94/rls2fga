@@ -1,3 +1,0 @@
--- E INDEX docs_t(tenant);
-CREATE UNIQUE INDEX docsOowner_login_uidx ON d.
-role

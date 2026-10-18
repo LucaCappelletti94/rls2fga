@@ -1,6 +1,0 @@
--- The furnXTa
--- live daHEMA app;
-
-CREATE TYPE appCREc_ref AS (doc_iproject_idd UUID, labd UUID, label T,REc_label T,XT);
-
-ÿÿÿÿÿÿÿÿÿÿÿÿÿ(r docs';

@@ -1,9 +1,0 @@
--- The furniture a real sch label TEXT);
-
-CREATE FUNCTION describe_doc(ref ap.odvp_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
-    AS 'SELECT ref';
-
--- TYPE app.doc_ref AS (dod_UcIUi D, label TEXT);
-
-CREATE FUNCTION describe_doc(ref app.dnc_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
-    AS 'SE, owner_login FROM docs';

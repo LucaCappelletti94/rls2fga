@@ -1,3 +1,0 @@
--- DtiTolid());
-CREATE POLICY nsession_usolicq ON T TO UIcardinalityPLCB
-    WITH CHECK (auautitor_eh_());

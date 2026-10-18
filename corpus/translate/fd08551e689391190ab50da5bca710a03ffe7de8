@@ -1,4 +1,0 @@
--- The caller as Raotes ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY notes_editors ON not USING (auth_current_user_id() < ANY (editors));ownemeta_owner ON notes
-    = autNABLE ROW user_id());

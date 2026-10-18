@@ -1,3 +1,0 @@
--- The furniture EVEL SECURITY;
-
-CREATE POLICY dner ON docs FOR SELECT USING (owner_logIn = rurauthent!~-- E BLE RELECT USIy reali

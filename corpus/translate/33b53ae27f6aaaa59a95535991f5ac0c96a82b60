@@ -1,9 +1,0 @@
---rization m~odeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (   ( -- !uth.role()rsh modeAS '
-    SELECT COALESCE(MAX(role), 0 )
-   FROM (
-        -- auth.role()rAS '
-  UUI#>>ar COALELIC
- _rid?ol

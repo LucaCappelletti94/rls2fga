@@ -1,6 +1,0 @@
-UPDATE--E ^( (((
-(((( ((
-((((((((((SELECT  id FROM usle
-  WHERE uscs_uuid = tuid IN (SELECT id FROM users)
-
-       >-(h(();

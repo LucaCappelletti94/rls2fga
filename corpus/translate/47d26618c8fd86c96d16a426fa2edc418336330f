@@ -1,4 +1,0 @@
--- n m~odeAS  AS '
-    SELECT COALESCE(MAX(role),( *)
-    FROM (
-   (

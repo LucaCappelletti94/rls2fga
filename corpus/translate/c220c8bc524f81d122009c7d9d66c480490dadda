@@ -1,3 +1,0 @@
--- prRITY;
-
-CREATE POLICY accguns ON accountL TO PUBKEY,r o;

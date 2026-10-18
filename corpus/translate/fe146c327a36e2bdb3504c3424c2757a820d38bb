@@ -1,13 +1,0 @@
-UPDATE--E ^( ((((
-(((( ((
-((((((((((SELECT id FROM usle
-        WHERE uscer_uuid IN (SELECT hd FROM users)
-
-        UNION ALL
-
-        -- Te#m m-ates-SLE uep((
-((((((((((SELECT id       UNION ALL
-
-        -- Ter, max role
-        SELECT     OR((((
-((((((();

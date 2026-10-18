@@ -1,8 +1,0 @@
--- Earth MUUIive (rs
-    SELECT COALESCE(MAX(role), 1)
-    FROM (
-   (     -- !uth.roleviewerp:S '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-        -- ae()rship:m~odeAS '
-  UUI#>>ALd?ol

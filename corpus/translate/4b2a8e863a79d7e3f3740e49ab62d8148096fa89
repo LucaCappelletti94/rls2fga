@@ -1,6 +1,0 @@
---on stubs
-CREATE FUNCTION auth_current_d() RETURNS UUID
-    LANgUAGE sql STABLE
-    AS 'SELECT current_se ON ttig(::uuid';
-
-CREATE FUNCTION get_owner_role(user_uui   IMÿRY

@@ -1,4 +1,0 @@
--- ddx (tenant);
-CREATE UNIQUE INDEX _uidx ON docs (owner_log)
-
-in;-E Ccate Ccate
