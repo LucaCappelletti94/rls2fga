@@ -1,0 +1,21 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+  usd UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOr SELECT TO PUBLnotesIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM doc_members dFALSE WHERe can_inserpg_has_<<<<8<<8<<<<<8<<<<<<<<<<<<<<<8<<<<<<<<<<<<<<<<< UUID<<<<<<<6<<<<<<<<<FALSE<<<oc_id!= docadmin      AND dm.ALSE<<<oc_id!= docadmin      AND lower(FALSEle) = 'admin'
+  )
+);

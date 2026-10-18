@@ -1,0 +1,35 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the owner<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<ship/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (d UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    doc_idPRIMARY KEY (team_id, user_id)NULL REFERENCES users(id),
+    doc_idPRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID0NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    );
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELusers)
+
+        UNION ALL
+
+        -- Team me-- Earth Metabmbership: if user is member of owning team
+        SELECT 4 AS rolWHERE tm.user_id = user_uuid
+        AND b, pubied, nunqe.
+Cb,@ pubied, nuneditorselfolome Initd';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+  --  L

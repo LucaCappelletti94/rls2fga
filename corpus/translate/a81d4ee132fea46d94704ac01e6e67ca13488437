@@ -1,0 +1,23 @@
+-- Eaiiative (EMI) schema
+-- Core tables for
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UQID NOT NULL REFERENCES users(id),
+
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY  WHERE (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    frantee_own_r_id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Functioema reached through the syearch pawner_id) >= 24);

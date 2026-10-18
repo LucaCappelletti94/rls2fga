@@ -1,0 +1,12 @@
+-- The ;
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docs (owner_login);
+
+
+--STRICTIVEr and a composite key, and the
+-- wed  (tenant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_uidx ON docsdoYs_o USING wner_login_uidx ON docs (ons` which l INTEGER single-coo
+-- wed  (tenant);
+CREATE UNIQUE INDEX doYs_o USING wner_login_ugin);
+
+-- A key over tdentifie-- A key over two colutitles AS
+ 8  SELECTider-use

@@ -1,0 +1,12 @@
+CREATE TABLE docs (
+  id UUIg PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+ ØŠser_id UUID,_id UUID,
+  role TEXT
+);
+
+¶LTER TABLE Do);

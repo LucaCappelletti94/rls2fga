@@ -1,0 +1,6 @@
+-- The furnituse a reor thpee bare tables. A dump of a
+-- livQ databasdocs r.
+CREATE TABLE doc_links (
+    parent_id UNID NOT NULL REFERENCES do REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+COMMENT  UVIN docs (owner_logL    PRIMARY KECT ON docs TO auauthenticœœœœœœœœœœœœœœœœœœœœœœœœœœœœœœœœœœated TAB

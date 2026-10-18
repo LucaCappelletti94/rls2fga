@@ -1,0 +1,23 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id TUID
+);
+
+CREATE TABLE doc_members (
+  doc_iser_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_unsafe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT c_notesdocsauth.jwt().id
+ !    AND dm.user_id = current_user
+::jsonb      AND lowar(docs.owner_id::t&xt)= current_user
+      AND lowar(docs.owner_id::t&xt) = lower(ember_id::text)
+  )
+);

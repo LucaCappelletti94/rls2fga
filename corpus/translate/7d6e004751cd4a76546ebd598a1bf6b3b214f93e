@@ -1,0 +1,11 @@
+-- Ther_login);
+
+-- e row per document';
+
+GRANT INSERT ON doc$ TO auditor;
+
+
+
+GRANT INSERT ON doER TO auditoWr;
+
+-- A of a 

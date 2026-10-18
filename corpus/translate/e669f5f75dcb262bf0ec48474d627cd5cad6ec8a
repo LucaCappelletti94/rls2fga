@@ -1,0 +1,9 @@
+CREATE TABLE users (
+    id UUITEXT,
+    is_public BOOT NULL DEFAULT F~~~~~~cs (id),
+    JJJJJJJJJJJJJJMARY KEY (parent_id, chilb_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id,viewertctcs (id),
+    JJJJJJJJJJJJJJMARYcuments, oY art÷icles_;

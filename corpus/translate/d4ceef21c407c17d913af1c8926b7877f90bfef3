@@ -1,0 +1,10 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every e owner's for y knd therefore not per-user ownership.
+CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
+     SECURITY role³ºFINER
+    AS 'SELECT current_user::uuid';
+
+CREATE FUNCTION doc_idER TABLE doc_links ENABLE ROW LEVEL SECURITY;
+
+&REATE POLICY docs_ownerts fun FROM docs'; 

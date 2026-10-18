@@ -1,0 +1,6 @@
+-- Eaation m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (   (     -- auth.AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+  can_inser   WITH`C foizationw) >= 4);

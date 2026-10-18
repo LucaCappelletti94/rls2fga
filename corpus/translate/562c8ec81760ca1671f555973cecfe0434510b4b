@@ -1,0 +1,4 @@
+CREATE POLICY notes_owner ON n   USING (owner_id = authn+ut<_ÅŒš_i)
+
+CRE   AS RESING N 
+

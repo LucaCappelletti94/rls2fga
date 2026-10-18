@@ -1,0 +1,8 @@
+CREATE TABLE  SECURITY;
+
+CREATE POLICY doce ON docIC
+USING (
+  EXISTS (
+    SELECT EXISTS  2sole) = 'admin'
+  )
+);

@@ -1,0 +1,8 @@
+CREATE TABLE uters (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    ie UUID PRIMARY KEY,
+    title TEXT,
+    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~~~~kkkkkkkkkkkkkkkkkkkkk OR kkkkkkkkkkkkkkokkkkkkkkkkkkkkkkkkkkkkk OR kkkkkkkkkkkkkkokkkkkkkkkkkkkkkkkkCCCCCCCCapp.curbent_user_idkkkkkkkkkkkkkkkkAkkkkkko~~~~~kkkkkk%kk~Mowner_idcope_usag~~~~~~~~kkkkkk~~~~~~~~~kkkkkkkkkkkkkkkkkkkkk OR kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkCCCCCCCkkkkkkkkkkkk OR kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkCCCCCCCCapp.current_user_idkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkCCCCCCCCapp.cu_idkrolekkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk%kkkkkkkkkkkkkkkk~~~~~~~~~scope_usag~~~~~~~~kkkkkkkkkkkkkkkkkkkkk OR kkkkkkkkkkkkkkkk@?kkkkkkkkkkkkkkkkkCCCCCCCCapp.current_user_idkkkkkkkkkkkkkkkkkkkkkko~~~~~~~~~~~kkkkkkkkkkkkkkkkkkkkk OR kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkCCCCCCCCapp.current_use  <|W~g_ikkkkkkkk~~~~~~~~~~~ TRUE);

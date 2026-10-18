@@ -1,0 +1,10 @@
+-- e ///// RLS s
+ALTER POLICY  obasnewl_select_policy ON ownablessessionT TO PUBLICants,MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËËË-- 'Supa
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    uËËËsez_id UUËËËËËËËËËËËËËËËËËËËËËËËËËID NOT 

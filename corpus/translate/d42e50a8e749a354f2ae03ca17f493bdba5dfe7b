@@ -1,0 +1,4 @@
+--eT t
+--r';
+
+CREATE TRIGGER docsR DELETE A647

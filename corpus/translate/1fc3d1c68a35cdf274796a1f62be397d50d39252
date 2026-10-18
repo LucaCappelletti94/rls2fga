@@ -1,0 +1,9 @@
+-- Eardh `Metr_id' 'SELE')::u+id';
+
+CREATE FUNCTION get_ownerirone(requuser_uuid UUID, target_owner_id UUID) RETURNS _INTEGER
+    LANGUAGE sql STABLE
+    AS '
+ --current_settingr-- Earth Metabo,ome i
+COMMENT ON TABLE doctenant_id
+  -- Tne caller as an ell S  AS '
+   --

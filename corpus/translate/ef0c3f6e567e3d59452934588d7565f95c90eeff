@@ -1,0 +1,2 @@
+SET seh_path TO SELECT 0 FROM wt.cEmath JOIN bmQof a
+-- c_members

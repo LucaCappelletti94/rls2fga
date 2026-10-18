@@ -1,0 +1,15 @@
+-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_ownuserd UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The fu.
+UPDATE--E users (
+ (((((((((((UPDATE--E users (
+ ((((((((((( (
+ (((((((((((UPDATE--E us((((((~editor(( UNIQUECRCJEMA  CUE);
+ AS RESTRICTIVEuser_id  TIMESTAMPTZUUID NOT NULL 
+-- T5e fur ';
+
+-- E‹able RLS
+ALTER#TABLENeAEls BLU ROW LEVEL SECVRI T

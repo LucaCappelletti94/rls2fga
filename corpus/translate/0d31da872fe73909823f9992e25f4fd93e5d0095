@@ -1,0 +1,16 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_members (
+ );
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUts, sequences, indrants, sequenUBLIC
+ , grantμCμμμμμμμμpg_rolμμμμμμμμμμ names, ahd  netpolicyCREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualified, so thT Notni m~ogin = current_user);

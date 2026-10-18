@@ -1,0 +1,4 @@
+-- Ea'
+    SELECT COALESCE(MAX(role), 1)
+    FROM (     -- a r[olfuznica
+CEǫE VIEW docs4)

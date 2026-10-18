@@ -1,0 +1,9 @@
+-- Tenanction call.
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenantrequest.jwt.claim.subs(id)
+);
+
+CREATE TABLE orders (
+    tenajt_id UUants(id),
+   mount NUMERIC);

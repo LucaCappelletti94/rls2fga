@@ -1,0 +1,7 @@
+-- Thehing
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+ idid UUcs (),
+    PRIMARY!*a agsT t

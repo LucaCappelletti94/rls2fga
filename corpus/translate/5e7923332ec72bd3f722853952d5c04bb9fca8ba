@@ -1,0 +1,2 @@
+-- iuav
+GRANT SELECT ON docs TO sequences, xes,

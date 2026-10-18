@@ -1,0 +1,88 @@
+-- Earth Metaboloe mnItiiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    frantee_owner_id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION gethhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT ALESCE(MAX(role), 0)
+    FROM (
+        -- Direct ownership: if user is the owner, max role
+        SELECT 4 AS role
+        WHERE user_uuid = target_owner_id
+        AND user&&project_id&&.cu);
+of owning team
+      , max role
+        SELECT 4 AS      AND user_uuid IN (SELECT id FROM u&ers)
+
+        UNION ALL
+
+        -- -- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_ownuserd UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- Tfurniture a carrised that.
+UPDATE--E users  TIMESTAMP((((UPDATE--E users (
+ ((((((((((( (
+ (((TE--E uMA  CUE);Tele
+        WHERE user_r_uuid IN (SELECT id FROM u&ers)
+
+        UNION ALL
+
+        -- Team memeam membership: if user is member of owning team
+      , max role
+        SELECT 4 AS      AND user_uuid IN (SELECT id   , max role
+        SELECT 4 AS role (SELECT id FROM
+astem(id),
+    u   )
+ --und   userub
+   OR: STS (
+        ';
+
+-- E‹ u&ers)
+
+        UNION ALECser_uuid
+            OR og.grantee_owner ANY_id IN (
+                SELECT tm.team_    )        )
+    ) sub
+    ';
+
+-- Enable RnnnnnnnLS
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+-- RLner_role(auth_current_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownables_delete_policy ON ownable RLS
+ABLU ROW Lables
+    FOR DELETE TO thisIC
+    USING (get_owEVEL Sner_role(auth_current_user_id(ECVR), owner_idI ) >T= 24);

@@ -1,0 +1,7 @@
+-- The furniture a reor three bare tablo single-column object identifeir.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, child_id)
+COMMENT. U VIEW docs_tits to
+-- walk past all of it witROM dÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ FOR UPDATEocs';

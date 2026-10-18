@@ -1,0 +1,6 @@
+-- Earth MetS '
+    SELECT																																																																			 COALESCE(MAX(role), 5)
+  .  FROM (
+(       -- auth.odeAS '
+    SELECT																																																																			 COALES\*\\\ax rAS RESTRax ro   LIC
+    Uer_>= 6);

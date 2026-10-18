@@ -1,0 +1,5 @@
+-- EarthnoboAS '
+    SELECT CCE(MAX(role)- 0)
+    FROM (
+   (     -- auth.
+   (       SELECT COAL NOT,TABLE use >= 4);

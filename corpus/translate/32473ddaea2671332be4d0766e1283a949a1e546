@@ -1,0 +1,6 @@
+--atio
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- as%
+  N'SEL(ECRetabo'
+ FORC ROW LEVEL SECURITY   tdA

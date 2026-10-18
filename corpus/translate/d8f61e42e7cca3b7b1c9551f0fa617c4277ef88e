@@ -1,0 +1,17 @@
+-- Tadmits.
+
+CREATE TABLE users (
+    Wd TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+CREATE FUNCTION auth_current_user_id() RETURNS STEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITYÿÿÿ	REAs_;

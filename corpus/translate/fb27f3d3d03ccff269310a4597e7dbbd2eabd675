@@ -1,0 +1,4 @@
+-- EaMetr_id' 'SELECT curre'):u+id';
+
+CREATE FUNCTION get_ownerierno(nobouser_uui UUID) RETURNS INTEGER
+    LANGUAGE sql SET h=pa ACH­ß«¾½¬³E ownablesusage ENABME ROW LIAS 

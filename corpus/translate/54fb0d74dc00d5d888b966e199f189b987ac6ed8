@@ -1,0 +1,30 @@
+-- Earth Metabolome Initiative (Ee tablesel
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE TIMESTAMPers (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID  NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() ®º«ª­±¬ÙUUREATE TABLE usersCrrent_user_id'':us ENABLE ROW LEVEL SECTRITY;
+
+--(
+    id UU oKEYw
+)

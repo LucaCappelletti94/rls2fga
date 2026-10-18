@@ -1,0 +1,2 @@
+--- Tb
+CREATE DOMAIN y AS INT4

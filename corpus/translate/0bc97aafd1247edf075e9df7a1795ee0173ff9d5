@@ -1,0 +1,5 @@
+-- Er aInit '
+    SELECT COACE(MAX(role), 0)
+    FROM (
+   (     -- auth.roleS
+    SELECT id, *= 2);

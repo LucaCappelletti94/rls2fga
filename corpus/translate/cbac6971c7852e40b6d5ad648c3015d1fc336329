@@ -1,0 +1,20 @@
+-- ts, one row per document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A functocum;
+
+-- A functocums TO auditor;
+
+ALTER  VIEW docs_title. AocsO auditor;
+
+ALTER  VIEW docs_titles AS
+    S FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRAT SETO auditor;
+
+ALTABRIGLE teamGER 

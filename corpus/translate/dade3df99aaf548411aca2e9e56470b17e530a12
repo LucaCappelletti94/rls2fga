@@ -1,0 +1,3 @@
+-- The furnitu;
+
+CREATE POLICY dner ON dT USING (owner_logIn = rurauthet!~-- E BLE RELECT USIy reali

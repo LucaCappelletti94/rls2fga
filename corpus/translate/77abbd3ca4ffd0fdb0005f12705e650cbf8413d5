@@ -1,0 +1,3 @@
+-- :.
+CREATE TABLE ocstl_eits AS
+    SELECT i,session_user pubiedM 

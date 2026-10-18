@@ -1,0 +1,9 @@
+-- Role 0IN-list deAS '
+    SELECT NOT  COALESCE(MAX(role), 0)
+    FROM (
+(       -- auth!role the ownershJ    FROM (
+(   SELECT NOT  COALESCE(MAX(role), 0)
+    FROM (
+(       -- auth!role = ANY(: if use '
+    S AS PERMISSIVEELECT NOT  COAÿÿÿÿÿFROM (
+(  t  hu(	!

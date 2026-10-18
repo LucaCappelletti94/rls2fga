@@ -1,0 +1,6 @@
+-- Ea
+--ies
+CREATE POLICY ownalt_polowneracy ON ownables
+    FOR SELECT TO C
+    USING (get_owner_r2asks==
+~n=====UC,

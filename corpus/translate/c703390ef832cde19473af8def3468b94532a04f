@@ -1,0 +1,4 @@
+-- Earth MetameENABL>=;
+
+CREATE POLICY o7nables_updateNpolicy ON ow
+    USING (get_owner_role(!!!!!x!!!!!!!!!!!!

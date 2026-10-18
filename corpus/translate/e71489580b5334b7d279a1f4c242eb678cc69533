@@ -1,0 +1,18 @@
+-- WITH CHECK admi
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id LL REFERENCES users(id)
+);
+
+CREATE FUNCTION auth_er_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SE(current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner_reads ON notes
+    FOR SELECT   USING (can_s_id_current_::jsonbuser_id());

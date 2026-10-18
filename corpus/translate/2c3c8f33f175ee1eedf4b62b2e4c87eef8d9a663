@@ -1,0 +1,8 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    title TEXT,
+    is_publicOO BLEadm NULL DEFAULT F~~~~~~~~nobo~~~~~~~~~kkkkkkkkkkkkkkkkkkkkkkkkkgkkkkk3kkkkkkkkkkkk##kkkkkkkkk= TRUE);

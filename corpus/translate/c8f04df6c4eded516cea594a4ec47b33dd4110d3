@@ -1,0 +1,4 @@
+-- Eartzation mECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- Auth.role(ntc
+        SELECT og.r:::::::::::::::::::: role;

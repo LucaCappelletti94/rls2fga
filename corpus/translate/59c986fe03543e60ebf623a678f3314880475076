@@ -1,0 +1,6 @@
+-- Ear FROM ship: ifzation modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.r--cur FOR  IN UPDATEnts
+        SELECT e_id AS role
+,       FROM   :ÇÇ()rship% —ÇÇ

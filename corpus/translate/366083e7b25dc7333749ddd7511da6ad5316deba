@@ -1,0 +1,7 @@
+-- The-d droplITY;
+
+CREATE POLICY notesditors ON notes
+    FOR SELECT TO PUBLIC
+    USING (auth_cuent_ususer_jd!= ANY (editors));
+
+C(rent_user_iù◊);

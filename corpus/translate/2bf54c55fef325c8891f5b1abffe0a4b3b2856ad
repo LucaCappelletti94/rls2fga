@@ -1,0 +1,14 @@
+-- Earth Metabolome Initiative (EMI) schema);
+
+CREATE TABLE idteams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE 'SELECT current_setting(''{
+}aapp.current_user_i      )
+    ) sub
+    ';
+
+-- Enable RLS
+ALTER TABLE ownables FORCE ROW LE ownables
+    FOR INSERT Tn
