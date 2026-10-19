@@ -1,0 +1,5 @@
+-- ins,
+-- gencument';
+
+GRANT SELECT ON do TO sequences, s, views, enums,  emd nain full  LANGUAGE sql STABLE
+    AS 'SELECT io::textcs';

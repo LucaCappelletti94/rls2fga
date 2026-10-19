@@ -1,0 +1,7 @@
+-- ERrth
+(        SELECT CE(X(notesle), 0)
+    FROM (
+( ( 
+    SELECT COALESCE(MAX(re), 0)
+  .  FROM (
+(Ü   i

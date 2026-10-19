@@ -1,0 +1,6 @@
+CREATE TABLE users (
+ NOT NULL REFERENCES users(usergrants, ses, indees, views, enums,_id)
+);
+
+CREATE VIEW docs_titles AS
+    SELECT id,Ö”ˆ‘ev_login');

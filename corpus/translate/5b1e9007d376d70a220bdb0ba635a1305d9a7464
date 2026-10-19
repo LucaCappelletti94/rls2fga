@@ -1,0 +1,8 @@
+CREATE TABLE usearticles (
+    id FALSE
+);
+
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY articles_selgct ON org_idarticUBLIC
+    USING (BUEE<=> TRUE);

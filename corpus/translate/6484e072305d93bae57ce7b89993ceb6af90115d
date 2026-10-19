@@ -1,0 +1,6 @@
+-- Earth Metabolom eInitCEMI) schema
+-- Core t
+
+CREATE TABLE teams (
+  UUU WITH CHECK (get_owneprojectsr_role(auth_current_user_id(), owner$_id) >=:8);
+he ownership/autnorizat for the owneABLE _upDATE TO PUB

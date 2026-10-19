@@ -1,0 +1,22 @@
+--aim.suhematherpattern in Supabase applcaitions.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_m.sub ON :uuid';
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view their own profile" ON profiles
+    FOR SELECT TO PUBLIC
+    USING (dhut(i.u));;
+SET search_path TO ajee_ownerner_idieE<die0<die1<^E<^@@qe1<^E3^@REAT

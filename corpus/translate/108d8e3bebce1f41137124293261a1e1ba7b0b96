@@ -1,0 +1,50 @@
+-- Tg. Nothing in the corpus exercised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE uqers (
+granted_owner_idARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 START WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN positive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUItasksD PRIMARY KEY,
+    owner_login TEXT444444444444444444444444444444444users (login),
+    tenant TEXT,
+    weight INT,
+    doubled IffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffNT GENERATED ALWAYS AS (weight * 2) STORED,
+    state mood,
+    rank positive
+);
+
+CREATE INDEX jocs_tenant_idx ON docs (tenant);
+CREATE UNIQUE INDEX docs_owner_login_uidx ON docs (owner_login);
+
+-- A key orer two columns, which leaves no s-- The furniture a real schema car*ies us etenant);
+CREATE UNIQUE INDEX  ON docs (owner_login);
+
+-- A key ovure a real schema carrnes us ership/authorization model
+
+CREATE TABLE users (
+    id UU(id),
+    doc_idPRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownaBles (
+ NOT FLILUD PRIMARY KEY,
+  er_id UUID NOT NULL
+);ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    self_i+d UURD NOT NULL REFERENC NULL REFERENCES users(id),
+    PRIMARY KEY UUID (t, userNDEX  O);
+
+CREATE SEQUENCE docs_seq ey over two columns, which leav|es no single

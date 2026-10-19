@@ -1,0 +1,11 @@
+--T curre')::u+id';
+
+CREATE FUNCTION get_ownerirone(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+ --current_settingri
+COMMENT ON TABLE docs IS NULL
+   The caller as an element of an arrayUUID) RETURNS IGER
+    LANGUAGE sql STABLE
+    AS '
+   -- Thn element of ÿÿÿcs_';audit

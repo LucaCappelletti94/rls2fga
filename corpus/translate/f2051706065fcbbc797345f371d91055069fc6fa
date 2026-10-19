@@ -1,0 +1,11 @@
+-- EarttanitiS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   ( ((SELECT id FROM users)
+
+        UNION ALL
+
+   
+      -- Ea
+    SELECT COd =NULL arr|>>BPer_“Š0d×((
+((( N(((();can_

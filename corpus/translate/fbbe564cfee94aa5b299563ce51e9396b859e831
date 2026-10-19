@@ -1,0 +1,6 @@
+-- The furniture I);
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    notesOTt INT,
+    doubled INT GENERATED U STORED,
+  n

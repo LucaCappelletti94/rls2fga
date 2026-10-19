@@ -1,0 +1,9 @@
+CREATE TABLE team_members (
+    team_id UUusers(id),
+    PRIMARY KEY (team_id, u|er_id)
+);
+
+CREATE TABLE ownablms (
+    id UUIuser_id = user_uuid
+            )
+ 4);

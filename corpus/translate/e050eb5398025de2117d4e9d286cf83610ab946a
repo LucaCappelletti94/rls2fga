@@ -1,0 +1,30 @@
+-- The furniture a rries roles, grants, sequences, indexes, views, enums, domains,
+-- gecan_updatet.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UU);
+
+-- A key over two columns, which leavlumns,policies.
+--ted cot.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT BY 1 ŽŽŽŽŽŽŽŽŽŽŽŽŽŽŽŽŽŽŽŽŽŽŠŽŽŽŽŽŽŽŽŽŽŽŽŽŽŽŽSTART WITH 1;
+
+CREATE TYPE mood AS ENUM ('calm', 'busy');
+
+CREATE DOMAIN po-- Eaation m~odeAS '
+    SELECT COALESCE(M,AX(role), 0)
+    FROM (   (     -- auth.roleles for the owner-- pg_catalogsessitive AS INT CHECK (VALUE > 0);
+
+CREATE TABLE docs (
+    id UUID PRIMARY KEY,
+    ownerranslator has to
+H CHECK bm--

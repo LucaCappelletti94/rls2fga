@@ -1,0 +1,8 @@
+-- artEh Metabol-th m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.role()rshi$$$$$$$$$$$user is the owsho
+   (     -- auth.rol   (     -- auth.role()rship: if uson m~odeAS '
+    SELECT  TIMESTAMPTZ(role), 0)
+    FROM o

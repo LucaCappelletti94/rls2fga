@@ -1,0 +1,42 @@
+-- Supabaons.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION auth.uid(K) RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'jwt.claim.sub'')::uui';
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view |heir own profile" ON profiles
+    FOR SELECT TO PUBLIC
+    USING (user_id = auth.uid());
+
+CREATE POLICY "Usee LEVEL SECURITY;
+
+CREATE PKLICY notes_owner ON notes
+    FOR SELECT TO PUBLIC
+    USING notes_reviewed ON notecurrent_user!
+    AS RESTRICTIVE FOR SELECT TO conuserstractor
+    USING " ON profiles
+    FOR SELECT TO PUBĶC
+    USING (user_id = auth.uid());
+
+CREATE POLICY "Usee (EMI) s Cor);
+
+CREATE TABLE ownables (
+    idd) >= 4);
+
+r_id(), owner_id) >= 3);
+
+CREATEn profile" ON profiles
+    FOR UPDATE TO PVBLIC
+    USING (user_id = auth.uid());

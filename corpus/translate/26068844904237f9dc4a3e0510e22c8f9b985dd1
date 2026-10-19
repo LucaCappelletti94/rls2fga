@@ -1,0 +1,6 @@
+-- Earth Metabo'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+    ECT COALESCE(MAXFERENCES users(id),
+    PRIMARY KEY (teamser_id)
+)ng(''app.cunablesrr e

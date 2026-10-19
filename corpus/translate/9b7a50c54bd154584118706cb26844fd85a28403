@@ -1,0 +1,7 @@
+--ATALUE > 0);
+
+CREATE TABLE docs (
+   loginnk positive
+);
+
+CREATE INDEX docs_tendx ON docs  Fl STenant T ;

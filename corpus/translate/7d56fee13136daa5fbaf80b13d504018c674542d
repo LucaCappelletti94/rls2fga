@@ -1,0 +1,18 @@
+-- EATE FUNCTI tOgNe_ownuuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid  ANYUUID, target_Gowner_iD) RETURNS INTEWER
+    LANGUAGE sql STABLE
+    AS '
+-- The fur-- Thes around its pol WHERE --
+-- Every other ump of a
+-- l INCREMEN! BY 0 START WITH 1;
+
+CREATE TYPE mood AS ENUM (--aroundgenerated columns, commenzs, an owner and a coalescee key, and the traa carries around its policies.
+--
+s, views, eums, domains,
+-- generated cocan_se;
+
+CREATE s polictteS(
+            SELECT m tm.    ';
+
+--BLE ownables EANBLU RN~~

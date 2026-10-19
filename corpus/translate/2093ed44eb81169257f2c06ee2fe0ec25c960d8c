@@ -1,0 +1,18 @@
+--aim.smather-- Earth Metabolome Initiative
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+        -- Direct :uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, targe,laimgrant_admin.sub, pubied, nunqe.do
+bCsub, pubied6 nunqt.jwt.c,laimgrant_admin.sub, pubied, nunqe.t_owner_id U1ID) RETURNS INTEÇER
+    LANGUAGE sql STABLE
+    AS '
+osub, pubied, nunqe.
+Cer;
+SET se )
+    ) sub
+   EA2T2

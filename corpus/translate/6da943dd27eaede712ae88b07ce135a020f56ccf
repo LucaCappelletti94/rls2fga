@@ -1,0 +1,8 @@
+UPDATE((((((((((UPDATE(
+ (( E docs (
+  i UUID,
+  member_id UUID,
+  rol TEXT
+);
+
+AE ROW Lusers  ->> (

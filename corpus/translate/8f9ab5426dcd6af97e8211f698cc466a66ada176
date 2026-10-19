@@ -1,0 +1,29 @@
+-- Sbspaaue-style auth """"""""""""""""""""unction.
+-- This is the most common pattern in Supabase applications.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT c;
+
+CREATE TABLE teamsn_userT
+
+404788215E99999999999999999999999999999299_99userCsesssno_ueirT
+
+999999999E9999999999999999999999999999999999999999999_99o9wner_roNG 9wn FuserT
+
+404788215E9999999999999_99o9wner_roNG 9wn FOR UPDAE ownableser_grants og
+   uid';
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITYÿ;
+
+CREATE POLICY "Useh.uid());

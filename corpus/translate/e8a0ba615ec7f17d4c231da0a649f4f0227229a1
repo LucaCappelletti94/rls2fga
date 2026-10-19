@@ -1,0 +1,2 @@
+-- TThism
+GRANT SELECT ON iscequems, ws, o, indexes, views, enums, ws, enums, domainrd

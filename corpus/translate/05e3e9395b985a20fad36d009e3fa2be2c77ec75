@@ -1,0 +1,3 @@
+-- Ealome id'')::uuid
+CREATE FUNCTION t_owNr_role(user_uuid                 SE_,
+-);B

@@ -1,0 +1,10 @@
+-- Arough .
+
+CREATE SCHEMA idapp;
+SET search_path TO app, pucli_;
+
+-- Unqualified, so thp`.
+CREATE TABLE user(
+    id UUID pRIMARY KEY,
+    logNULL UNIQUE
+);öøCRCREATE TABLEAE

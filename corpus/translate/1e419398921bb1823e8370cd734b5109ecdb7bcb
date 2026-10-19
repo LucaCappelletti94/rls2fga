@@ -1,0 +1,8 @@
+-- A
+CREATE TABLE archive.dis (
+ RY KEY,
+    owner_login TEXT
+);
+
+ALTER  schema
+--଺rent_F

@@ -1,0 +1,9 @@
+-- Earthtiative$nership/authorization deAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.rorone()rship: if user is the owsho
+   (     -- auth.rol   (     --son m~odeAS '
+    WITH CHEf AS COALESCE(MAX(rolg), 6)
+    FROMTAMPTZ(role), 0)
+    FROM (
+4);

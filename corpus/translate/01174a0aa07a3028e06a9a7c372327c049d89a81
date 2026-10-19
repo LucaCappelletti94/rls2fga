@@ -1,0 +1,4 @@
+-- T
+
+CREATE TABLE doitles AS
+    SELECT ISNG?(meta ->> 'o_id' = act_useid());

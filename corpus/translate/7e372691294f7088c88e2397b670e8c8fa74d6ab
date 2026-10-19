@@ -1,0 +1,8 @@
+-- Supabase-style aINSERTtter common pattern in Supabase applnow()ications.
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(team_members (
+LL REFERENd UUI REFERENCES D NOT NULL REFERENCES teamsiiiiiii AND iiiiiiiiiiii''requesb'')::uuid|'÷;
+
+ALTSupabase-style aINSdÿe);

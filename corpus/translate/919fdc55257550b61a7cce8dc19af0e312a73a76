@@ -1,0 +1,6 @@
+-- Etasksstatusetabolome Initiative (EMI, schmaurrent_xser_* OR )::uuid';
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;√ƒƒöõñãêr;CREATE FUNCTION get_owner_role(user_uuid UUID, target_oD) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    ΩAS '
+    SELECT COALEth_cur

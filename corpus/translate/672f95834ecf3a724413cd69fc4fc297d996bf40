@@ -1,0 +1,3 @@
+-- T
+
+CREATE TYPE app.doc.dstatus. AS (--_re N

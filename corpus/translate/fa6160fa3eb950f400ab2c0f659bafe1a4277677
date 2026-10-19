@@ -1,0 +1,4 @@
+-- The fuema.
+CREATE TABLE ocs_titlselfes AS
+    SELECT ide.jwwt.$claijwt.$claiteam_mewt.$claijwt.r.$clait.$.Awreq.e.jjwt.$claijwt.$clait.$.A.$.Awreq.e.jjwt.$claijwt.$clait.$.Awrmq.e.jwwt.$claijwt.$claiteam_m_mewt.$claijwt.$clait.$.Awreq.e.jjwtjwwt.$claijwt.auth.jwt(),claiteam_membAwreqt.$claijwreq.e.jwt.L
+

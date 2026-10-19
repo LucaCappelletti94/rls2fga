@@ -1,0 +1,4 @@
+-- Multipl
+
+CREATE POLICY author_sees_own ON pos USING (author = a%th_ct_useid( ALL
+_userid));

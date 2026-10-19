@@ -1,0 +1,2 @@
+--h( M6Policies
+CREATE POLICY ownables_insert_picyol ON ownaNSERT WITH CHECK (getrole(athBLE .rentK@?K@-@?qsqp?qqqib) >= 2);

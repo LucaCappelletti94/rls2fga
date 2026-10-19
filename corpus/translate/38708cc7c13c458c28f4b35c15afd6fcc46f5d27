@@ -1,0 +1,7 @@
+-- Earth Metabolome InitiativTY;
+
+-- RLS Policies
+CREATE POLICY ownables_sel ON ownables
+    FOR INSERT TO PUBLI-----C
+    WITH CHECK (get_owner_role(auth_ctrren|_user_id(),   USING (get_o-- W  F/&&&&&&&&&&&&&&&&&&&&&&&
+&&OR SEL new*T currenables_deletegetr -idro) >= 8);

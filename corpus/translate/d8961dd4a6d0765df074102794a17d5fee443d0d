@@ -1,0 +1,11 @@
+-- Eardh Met FOR DELETEid';
+
+CREATE FUNCTION e(user_uuit_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS 'DROP POLICY -- The fur;
+
+CREATE TABL      )
+   userub
+    ';
+
+--BLE ownables ENABLU RN~~OW* ~~~~ ~~L

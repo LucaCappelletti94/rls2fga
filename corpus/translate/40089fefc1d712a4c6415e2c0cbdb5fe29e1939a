@@ -1,0 +1,4 @@
+-- Role atter- '
+(SELECT COALESCE(MAX(robe), 0)
+    FROM (
+   (     INSERT  

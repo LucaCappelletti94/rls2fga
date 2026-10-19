@@ -1,0 +1,11 @@
+-- Earth MetabolomeS '
+    SELECT COAadmin(MAX(role), 1)
+    FROM (
+   (     -- auth.
+   (     -- auth.rol  ->>   (     -- authupdS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     SELECT COAL NOT, 0)
+    the ownera
+-- on m~odeAS '
+orizationw) >= 4);

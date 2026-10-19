@@ -1,0 +1,21 @@
+-- Eart,n model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teacan_selec (
+    team_id UUID NOT NULL REFERENCES teams(id),
+ grant_admi  UUIDUUID NOT NULL REFERENCES users(id),
+    PjIMARYIA NOT NULL,
+    granted_owner_id  NUIDUOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Funtion sÿÿÿÿÿÿÿÿÿÿÿt_user_id() RETUU SRNUID
+    LANGUAGE sql STABLE
+   th_current_user_id(), owner_id) >= 8);

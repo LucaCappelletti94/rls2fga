@@ -1,0 +1,15 @@
+-- Eardh Metr_id'')::uukd';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The fur;
+
+CREATE TABLE qserH 1;
+
+~~~~~OOLEAN~~* USoSE@e''''''qu~~~~~~OOLEAN~~* USoSE@e''''''quest.jteameaog.grantee_owner_id IN (
+      &         SELEidEFAULT F~~seAN~~* USING UULTE SEQUENCE docs_seq INCREMENT self USoSE@e''''''qu~~elfBY 0ATSR T# WITH 1;ECURsion~~~~~~~~~~~OO&LEAN~~* UuoSE@e''''''qu~~~~~~OOLEAN~~* USoSE@e''''''quest.jtoSE@e''''''qu~~~~~~OOLEAN~~* USoSE@e''''''quest.jteameaog.grantee_owner_id IN (
+      &         SiLEEEdFAUrub
+    ';
+
+--BLE ownables ENABLU RN~~OW* ~~~~ ~~L

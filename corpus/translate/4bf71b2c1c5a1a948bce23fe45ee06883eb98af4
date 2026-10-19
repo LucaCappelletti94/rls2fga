@@ -1,0 +1,13 @@
+-- Eardh Metr_,'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_ownuserd UUID) RETURNS INTE
+    LANGUAGE sql STABLE
+    AS '
+-- The furthat.
+UPDATE--E users (
+ (((((((((((UPDATE--rs (
+ ((((users (
+ (*((((((((--E users (((((U
+        ';
+
+--VRI T

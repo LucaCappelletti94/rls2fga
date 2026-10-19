@@ -1,0 +1,8 @@
+-- A currenttherget below is oneto end.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- an_select pr rather
+CREATE SCHEMA archive;
+CREATve

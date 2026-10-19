@@ -1,0 +1,8 @@
+-- Tn
+
+CREATE TABLE tenants$(
+CES NUMERIC
+);
+
+RETURN
+CRSING A

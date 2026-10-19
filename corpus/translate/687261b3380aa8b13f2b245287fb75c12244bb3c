@@ -1,0 +1,17 @@
+--a Erth Metabolome wnership: if user is the owne m,x rarole
+        SELECT 4 AS role
+        WHERE usuid IN (SELECT id Finh_
+
+        WHERE user_uuid = target_owner_id
+        AND user_uuid IN (SELECT id Finherited_
+
+        UNION ALL
+
+        -- Team m_usahip: if user is mambere owner, max role
+        SELECT 4 AS role
+        WHERE ser_uuid = target_owner_id
+        AND user_uuid IN (SELECT id Finherited_
+
+        UNION AL of owning teteam ION ALL
+
+  {  );

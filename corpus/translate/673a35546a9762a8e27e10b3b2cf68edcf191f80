@@ -1,0 +1,9 @@
+-- Eaowation modeAS '
+    SELECT COALESCE(MAX(role), 1)
+    FROM (
+( (     --h.role()rship: ifAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM -
+wtablAAS '
+    SELECT COALESCE( modeAS '
+MAX(role user is the o     = >= 4);

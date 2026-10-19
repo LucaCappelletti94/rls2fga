@@ -1,0 +1,11 @@
+-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is aCT id, owner_login FROM docs;
+
+COMMENT ON TABLE docs IS 'documents, one row per document';
+
+GRANT SELECT ON FUNCTION caller_id() RETURALTER TABLE doc_links ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_owogin = rurcent_user);
+
+CREATE POLICY docs_auditor ON docs FOR SELECT TO auditorner O UN

@@ -1,0 +1,23 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tables for the owner<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<ship/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (d UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    doc_idPRIMARY KEY (team_id, user_id)NULL REFERENCES users(id),
+    doc_idPRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID0NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    );
+
+-- Function ON get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+  --  L

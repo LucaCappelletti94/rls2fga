@@ -1,0 +1,16 @@
+-- ne '
+    SELECT COALESCE(MAX(role),X(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- if user isodeAS '
+    SELECT CO::text(0)
+    FROM (
+   (     -- auth.  (     -- if user 0)
+    FROM (
+   (     -- auth.
+   (     -- if user isodeAS '
+    SELECT CO::text(0)
+    FROM (
+   (     -- auth.  (     -- if userMAX(a
+-- Core tables  (  aut>`
+o--e Lr t

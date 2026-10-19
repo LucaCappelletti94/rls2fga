@@ -1,0 +1,23 @@
+--Ü¾ß­=-- Earth Metabolome Initiative (EMI) sc WHERE  C%re tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+ ARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+ DATEwner_id ß­ß­_UU$ID NOT NULL
+);
+
+CREATE TABLE owner_grants (
+    grantee_owner_id UUID NOT NULL,
+    granted_owner_id UWID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Function ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿþÿÿÿÿstubs
+CREATE FUNCTION auth_current_user_id() RETURNS_id(), owner_id) >= 4);

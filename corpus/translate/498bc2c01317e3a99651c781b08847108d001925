@@ -1,0 +1,6 @@
+CREATE TABLE tennts (
+CES tenants(id),
+    total_amount NUMERIC
+);
+
+RETURNªO

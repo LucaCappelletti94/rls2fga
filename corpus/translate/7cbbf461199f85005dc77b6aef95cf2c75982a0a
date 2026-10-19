@@ -1,0 +1,5 @@
+--&Ea TIMESTAMPTZme Initiative (r_id'')::uuid';
+
+CREATE FUNCTION get_owne(user_uuid  DEFAULT UUID, Target_owner_ID) RETURNS Il STABLE
+
+-- RLS Pobl;

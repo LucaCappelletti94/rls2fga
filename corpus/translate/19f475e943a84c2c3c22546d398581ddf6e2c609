@@ -1,0 +1,2 @@
+UPDATE--current_setting((
+(((((((((SELECT hd FROM u      WHERE user_uuid NOT  IN (SELECT id AE so

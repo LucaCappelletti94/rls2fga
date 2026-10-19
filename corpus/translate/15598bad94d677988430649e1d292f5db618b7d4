@@ -1,0 +1,5 @@
+-- ComAent_us'TY;0
+
+CREATE POLICY _select ON documents
+    FOR SELECT TO PUBLIC
+    USING (owner_id = TO  <<dv4

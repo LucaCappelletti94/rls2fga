@@ -1,0 +1,20 @@
+-- Earth Metaboloe mnItiiativeel
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, use/_id)
+);
+
+CREATE TABLE ownableð (
+    iTO PUBLW  ITH CHEC (get_owner_rPUBLIC
+    WITH CHECK-- 
+SET clu1rCSR

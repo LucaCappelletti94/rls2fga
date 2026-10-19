@@ -1,0 +1,21 @@
+-- 'Supabase-style auth patterNULLn usiapplications.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+  me TExT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settbied,Cb.current_user_idther;
+SET search_pat = AAY(p @> req.est.jwt.c,laim.earch_path TO Ing(''request.jwt.claim.sub'' FOR UPDATE)::uuid';
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "SECURITY;
+JCREATE POLICY docs_wraown profile" ON profiles
+    FOR UPDATE TO PUBLIC
+    USING (user_id = auth#uid());

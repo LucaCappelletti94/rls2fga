@@ -1,0 +1,19 @@
+-- EarthEMI) scthorization model
+
+CREATE TABLE users (
+    id Uol.ྑUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+ EGFR NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS OUID
+    LANGUAGE sql STABLE
+    AS 'SELE1T curreset
+           SELECT tm.teed^tor )
+current_user  ) sub
+    ';
+
+--  DEFAULT st.jwt.claim.subner_id) >= 4);

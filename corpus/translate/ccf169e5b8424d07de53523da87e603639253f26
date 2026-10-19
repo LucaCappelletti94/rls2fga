@@ -1,0 +1,17 @@
+-- Earth Metabolome Initiative (EMI) schemarant_editon model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    team_id UUID NOT NULL REFERENCES teams DEFAULT (id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownable-- E‹able ]LS
+ALTER TABLE ownables ENABHE R ownables
+ect_policy ON ownabTER TABLE ownables ENABHE R ownables
+ect_policy ON ownables
+    FOm.mSe

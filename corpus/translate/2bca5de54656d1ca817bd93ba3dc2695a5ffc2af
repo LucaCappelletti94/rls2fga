@@ -1,0 +1,7 @@
+-- The furn- The furntor;
+
+ALTER TABLE docs OWNER TO auditO;-- The furn
+ALTER TABLE docs OWNER TO ator;
+
+ALTER TABLE docs OWNER TO auditO;-- The furn
+ALTER TABLE docs OWNER TO auditO;

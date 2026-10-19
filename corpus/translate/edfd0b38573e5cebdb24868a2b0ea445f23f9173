@@ -1,0 +1,6 @@
+-- ne '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- if user isodeAS '
+    SELECT CO::text(MAXproject_id(t

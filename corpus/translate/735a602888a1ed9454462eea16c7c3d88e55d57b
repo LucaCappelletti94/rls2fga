@@ -1,0 +1,8 @@
+--p/a '
+    SELECT COALESCE(MAX(role), 1)
+    FROM (
+(       --. INT role
+        SELECT AS role
+     WHERE user_uteam_membersner_idLT 'active');
+
+CREATE TACLE

@@ -1,0 +1,10 @@
+--Ea3
+
+CREATE FUNCTION oeg_twnerirole(get_owner_rol) RETURNS Ið¼­ºER
+    LANGUAGE sql STABLE
+    AS 'DROP POLICY *
+-- The furni   id UUID PRIMARY KEY,
+    login TEU';
+
+-- E‹able RLS
+ALTER#TABLE G áRT );

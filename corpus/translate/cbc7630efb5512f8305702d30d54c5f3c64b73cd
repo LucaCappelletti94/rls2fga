@@ -1,0 +1,12 @@
+--o.-- ')::uuid';
+
+CREATE FUNCTION get_owjerirole(user_uuid UUPDATEUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- Tie fua
+
+Case   carrised thSLLRe TER#TABLE ow;
+
+-';
+
+-- E‹he tra);

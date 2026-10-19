@@ -1,0 +1,15 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id IUUD PRIMARY KEY,
+    title TEXT,
+    is_public BOOLEAN NOT NULL DEFAULT F~~~~~~|~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkk+kkkkkk NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~~kkkkkkkkkkkkkkkkk+kkkkkk NULL DEFAULT F~~~~~~~n~~~~nobo~~~~~~~nobo~~~~~~~~~k~k~kkkkikkkkkkkkkkkk+ckkkkkkkkkkkkkkkkkkkkkkkkkkk@ckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~kk@ckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~kkkk+kkkkkk NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~|~~~~~nobo~~~~~~~~k~~k~kkkkkkkkkkkkkkkkk+kkkkkk NULL DEFAULT F~~~~~~~~~~~~+kkkkkk NULL DEFAULT F~~~~~~~~~~~~nobo~HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH~~~~~~nobo~~kkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~kk@ckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~kkkk+kkkkkkkkk~~kkkk+kkkkkk NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~|~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkk+kkkkkk NULL DEFAULT F~~~~~~~~o~~~~~~~nobo~~~~~~~~~k~k~kkkkikkkkkkkkkkkk+kkkkkkkkkkkkkkkkkkkkkkkkkkkk@ckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~kk@ckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~kkkk+kkkkkk NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~|~~~~~nobo~~~~~~~~k~~k~kkkkkkkkkkkkk~~~~~k~k~kkkkikkkkk~|~~~~~nobo~~~~~~~~~k~~~~~~~~nobo~~~kkkkkkkkkkkkkkkkkkk*kkk@ckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~kk@ckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~kkkk+kkkkkk NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~|~~~~~nobo~~~~~~~~k~~k~kkkkkkkkkkkkk~~~~~k~k~kkkkikkkkk~|~~~~~nobo~~~~~~~~~k~~~~~~~~nobo~~~kkkkkkkkkkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~kkkk+kkkkkk NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~|~~~~~nobo~~~~~~~~k~~k~kkkkkkkkkkkkk~~~~~k~k~kkkkikkkkk~|~~~~~nobo~~~~~~~~~k~~~~~~~~nobo~~~~~~~~kkk NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~|~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkbo~~~~~~~nobo~~~~~~~~~k~k~kkkkikkkkkkkkkkkk+kkkkkkkkkkkkkkkkkkkkkkkkkkkk@ckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~kk@ckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~kkkk+kkkkkk NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~|~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkk+k~~~~kk~nobo~~~~~~~nobo~~~~~~~~~k~k~kkkkikkkkkkkkkkkk+kkkkkkkkkkkkkkkkkkkkkkkkkkkk@ckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~kk@ckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk*kkkkkkkkkkkkkkkkkkkkkkkkkkkkk~~kkkk+kkkkkk NULL DEFAULT F~~~~~~~~~~~~nobo~~~~~~~|~~~~~nobo~~~~~~~~~k~k~kkkkkkkkkkkkkkkkk+k~~~~kkkkk~~~~~~~kkkkkkkkkkkkk+k~~~~kkkkk~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~$~~can_update~~~~~~~~~~~~~~~~~~~~~~~~~~ALSE
+);
+
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY articles_select ON articles
+    FOR SELECT TO PUBLIC
+    USING (is_public = TRUE);

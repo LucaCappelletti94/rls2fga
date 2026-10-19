@@ -1,0 +1,2 @@
+SELECT 0 FROM nd(o,_,$0)
+   );

@@ -1,0 +1,17 @@
+-- Supabase-styce auth pattern using auth.uid() fns.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUID PRIMARY KEY,
+    user_ay_name TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCiiiiiiiiiiiiii''request.jwt.claim.sub'')::uuid'÷;URIEATE POLICY uid';
+uth.uidÿ();

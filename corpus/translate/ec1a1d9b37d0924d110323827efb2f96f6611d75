@@ -1,0 +1,11 @@
+-- A PESTRICTIVE policy scoped to `cobi rorants.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+  _id TE);
+
+CREATE POLICY notes_reviewed ON notes
+    AS RESTRICTIVE-- A PESTRICTIVE policy scoped to `convra user_id());

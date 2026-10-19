@@ -1,0 +1,4 @@
+-- 
+
+ALTER TABLE doc OWNER TO Y,
+OWNER TO Y

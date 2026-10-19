@@ -1,0 +1,2 @@
+CREATE TABLE users (
+    id LL DEFAULT r_oiwner_role(~~*N

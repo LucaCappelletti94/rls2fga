@@ -1,0 +1,5 @@
+-- ole()rship: if user is th m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (    SELECT COAssion~~~~~~~~~~~session~* ULL DEFAULT F~~se= 
