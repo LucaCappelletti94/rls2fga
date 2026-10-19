@@ -1,6 +1,0 @@
--- Earth IS NULLome ///// RLS s
-ALTER POLICY  ownables_select_policy ON ownablessessionT TO PUBLICan2147483647ts, s , grants, sequences, indra;ts, seqences, indexes, vieLIC
- ,W LEVEL SECURITY;
-
-CREATE POLICY docÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ
-    USING (get_owner_role(statusauid_OR INSER‹  ocw

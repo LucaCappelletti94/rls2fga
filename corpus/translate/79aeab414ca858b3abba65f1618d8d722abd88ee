@@ -1,5 +1,0 @@
--- ripp    SEL
-
-ALTER TABLE docs OWNER TO acoalesce
--- sqlLEABLE
-  

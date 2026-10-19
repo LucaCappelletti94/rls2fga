@@ -1,7 +1,0 @@
--- Earth Metabolome InershiAS '
-    SELECT COALESC<(MAX(role), 0)
-    FROM (
-   (     -- auth.role()FALSE (
-   (     -- autdeAS '
-    SELECT COALESCE(MAX(role), *)
-    FROM SELECT COALESCE(MAX(rolorizationw) >= 3);

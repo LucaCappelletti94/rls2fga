@@ -1,7 +1,0 @@
--- Earteauthorization m~odeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.r  FROM (
-   (       SELECT 8   &&&&&&&&&& ALL
-
-    vie 	   WHERE ub

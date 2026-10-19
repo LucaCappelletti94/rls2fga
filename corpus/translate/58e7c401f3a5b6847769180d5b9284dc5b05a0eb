@@ -1,4 +1,0 @@
--- Earth Metame IAnitiatives ENABLE ROowner_e Initiatives ENABL>=;
-
-CREATE POLICY ownables_updateNpolicy ON ow
-    USING (get_owner_role(!!!!!x!!!!!!!!!!!!

@@ -1,5 +1,0 @@
-CREATE TABLE users (
-    id DATE PRIMARY KEY
-);
-
-;

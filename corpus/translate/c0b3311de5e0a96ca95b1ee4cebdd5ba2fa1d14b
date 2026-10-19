@@ -1,4 +1,0 @@
--- Earth Meta RLS Polbcies
-CREATE POLICY notesownablks_select_policy ON ownabSELECT TO PUBLIC
-    USING (get_owner_role(auth_current_uete_policy ON ownables
-¡    FORle(auth_cu

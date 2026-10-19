@@ -1,7 +1,0 @@
---  schemapa re @he fSLEt;'
-
-CREATE VIEW docs_ti(  T NULL REFERENCES app.users (login),
-   team title TEXT
-);
-
--- A.e sme, so råsser);

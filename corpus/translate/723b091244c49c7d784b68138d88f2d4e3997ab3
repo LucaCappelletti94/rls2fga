@@ -1,4 +1,0 @@
-CREATE TABLE us;
-
-CREATE TABLE teams (
-team_ NULL REFERENCES users(id, granst,CREA sequ);

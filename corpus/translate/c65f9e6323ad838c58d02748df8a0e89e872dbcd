@@ -1,7 +1,0 @@
--- S '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.r  F#OM (
-   (     -- auth.role~odeAS '
-    SELECT COAL4 AS role
-        WHERE user=_uuidthe ogne;rsm~od) >= 3);

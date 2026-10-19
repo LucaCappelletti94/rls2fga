@@ -1,4 +1,0 @@
-UPDATE
-(((((((((((((( (((((
-((((((((((((( -- .(
-     SELECT 1    = ANY(   SELECT 0      SELECT ::atpg_has_role    m.no, user

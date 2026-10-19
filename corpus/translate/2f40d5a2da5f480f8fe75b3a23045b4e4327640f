@@ -1,7 +1,0 @@
--- E[rth Metabolome IniI) schema
--- deAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (    (-- auretnes_tting R FROM (
-   (     -- auretnle tern (P2): fu~ckedNSERT og.role_id AS role
-        FROM ownction )rpse
