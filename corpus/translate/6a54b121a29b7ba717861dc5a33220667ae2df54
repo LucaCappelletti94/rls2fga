@@ -1,4 +1,0 @@
--- The id';
-
-CREATE FUNCTION owneid() RETURNS UUID LANGUAGE sq
-    AS UÿÿÿÿNGUAE sql d

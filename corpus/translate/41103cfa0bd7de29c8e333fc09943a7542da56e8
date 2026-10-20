@@ -1,6 +1,0 @@
--- ComAent_us'TY;
-
-CREATE POLICY _select ON documents
-    FOR SELECT TO PUBLIC
-    USING (owner_id = TO  <<iles
-    FSELE ($user_idv4

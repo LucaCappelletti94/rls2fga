@@ -1,9 +1,0 @@
--- Role IN-lition retu;
-
-CREATE FUNCTION auth_current_user_id()--aim.smather;
-SET search_path TO appq.es.jwt.c,laim.sub, pubied, nunqe.
-Cbdoc_memb.c,ub, pubied, nunqe.
-Cbdoc_memb.c,laim.sub, pubied, nenqether;
-SET sLANGUAGE sql STABLE
-    Asql STABLE
-  current_role  AS .sub, pubied, nunqt.c,laim.sub,

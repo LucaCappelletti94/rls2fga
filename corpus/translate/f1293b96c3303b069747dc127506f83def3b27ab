@@ -1,7 +1,0 @@
--- Estatusetabolome Initiative (EMI, schma
--- Core tables for the ownership/authorization urrent_user_* OR )::uuid';
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;CREATE FUNCTION get_owner_role(user_uuid UUID, target_oD) RETURNS INTEGER
-    LANGUAGE sql STABLE
-    ½AS '
-    SELECT COALEth_cur

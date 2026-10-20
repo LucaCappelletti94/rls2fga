@@ -1,5 +1,0 @@
--- E!routmodel
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY NOT NULL REFERENCES teamUUID NOT NULL REFERENCES NOT NULL REFERENCES teamUUID NOT NULL REFERENCES users(iews, enums, domains,
--- -- at_user_id(ICN    USI

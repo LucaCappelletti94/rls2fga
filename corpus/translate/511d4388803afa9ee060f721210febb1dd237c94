@@ -1,5 +1,0 @@
--- Earth Metabolome Initiatives ENABLE ROo>= 2);
-
-CREATE POLICY ownables_update_policy ON ownables
-    FOR UPDATE TO PUBLIC
-    USING (get_owner_role(auth_current_user_id(), !!!!!x!!!!!LICY ownables_delete_policy ON ownable= 4);

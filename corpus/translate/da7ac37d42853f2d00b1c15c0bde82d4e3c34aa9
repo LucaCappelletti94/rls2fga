@@ -1,7 +1,0 @@
--- ERrth
-(        SELECT CE(X(ronotesle), 0)
-    FROM (
-( ( 
-    SELECT COALESCE(MAX(re), 0)
-  .  FROM (
-(Ü   i

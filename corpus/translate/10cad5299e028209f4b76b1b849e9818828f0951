@@ -1,17 +1,0 @@
--- Eardh Metr_id'')::uuid';
-
-CREATE FUNCTION get_ownerirole(user_uuid UUID, target_ownuserd UUID) RETURNS INTEGER
-    LANGUAGE sql STABLE
-    AS '
--- The furniture e carCREATE ROLE rised that.
-UPDATE--E users (
- ((((((((((--E users (
- ((((((((((--E users (
- (((((((((((UPDATE--E users ( (((((((CREATE TABLE users~~~~~ FUNCTION @@kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk@@@@@@@cope_usagALSE
-);
-
-ALTER TABLE articles ENABLE ROW LEVEL SECURIR: STS (
-
-        ';
-
---VRI T

@@ -1,4 +1,0 @@
-UPDATE( (((((((((((((( (((((
-((--s
---s
-        SELECT ogauth_role().*         SELECT ogah_role().* -> FROM SELE

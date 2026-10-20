@@ -1,9 +1,0 @@
--- Earthio '
-    SELECT COALESCE(MAX(role), 0)
-  .  FROM (
-(   SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (     -- aut=.role(nts
-        SELECT       FROM ow   '
-    -- Chi`/authorization modeAO '
-    SELECT LESCE(Muth.role()les for tR

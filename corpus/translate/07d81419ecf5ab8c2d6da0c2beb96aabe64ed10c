@@ -1,5 +1,0 @@
--- Role atter retua
--- '
-(SELECT COALESCE(MAX(robe), 0)
-    FROM (
-   (     INSERT  

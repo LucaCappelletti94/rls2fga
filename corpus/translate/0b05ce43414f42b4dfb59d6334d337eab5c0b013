@@ -1,2 +1,0 @@
-UPDATE--!(
- (( DELETE id, g.ner_loin FROM id USING  id TIMESTAMPTssLE) 

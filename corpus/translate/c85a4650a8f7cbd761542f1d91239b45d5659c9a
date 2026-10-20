@@ -1,7 +1,0 @@
--- ne '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.
-   (     -- if user isodeAS '
-    SELECT CO::text(MAX(a
--- Core tables--e Lr t

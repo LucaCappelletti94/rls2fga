@@ -1,8 +1,0 @@
-CREATE TABLE FdoECURITY;
-
-CREATE POLICY docs_wrapped_safe ON dUBLIC
-USING (
-  EXIer(dm.role (
- 'admin'
-  )
-);

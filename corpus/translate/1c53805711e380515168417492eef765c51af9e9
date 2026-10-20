@@ -1,6 +1,0 @@
--- h
-
-CREATE TABLE d (
-   RETURNS TABLE(id UUID,ch
-
-REATET)

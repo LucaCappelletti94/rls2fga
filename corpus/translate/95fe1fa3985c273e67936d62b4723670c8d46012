@@ -1,4 +1,0 @@
--- The caEVEL SECURITY;
-
-CREATE POLICY notes_editors ON not USING (auth_current_user_id() < ANY (editors));ownemeta_owner ON notes
-    = aut[ABLE ROW user_id());

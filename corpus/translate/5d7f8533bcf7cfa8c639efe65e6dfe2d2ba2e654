@@ -1,9 +1,0 @@
--- Eardh Metabo_id'')::uuid';
-
-CREATE FUNCTION get_ownerirole(useret_owner_id UUID) RETURNS INTEGERA    LANGUAGE sql STABLE
-    AS '
-    SELECT COALESCE(MAX(rolg),    )
-    ) sub
-    ';
-
--- E‹able RLS

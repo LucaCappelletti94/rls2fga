@@ -1,4 +1,0 @@
--- The ficar
-CREATE VIEW dtles AS
-    SELECT 0id, ovner_login FROM doEnow()
-;

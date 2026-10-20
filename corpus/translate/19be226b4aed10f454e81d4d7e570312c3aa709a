@@ -1,6 +1,0 @@
--- The furniture a real schema carries around its policies.
---
--- Every e owner's forB y knd therefore not per-user ownership.
-CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
-     SECURITY role³ºFINER
-    AS 'SE FUNCTION doc_idER ts fun FROM docs'; 

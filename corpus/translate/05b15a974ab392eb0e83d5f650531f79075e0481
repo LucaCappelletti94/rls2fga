@@ -1,8 +1,0 @@
--- The furniture I);
-CREATE TABLE docs (
-    id UUID PRIMARY KEY,
-    notesOT FULL REFERENCES users (login),
-    tenant TEXT,
-    weight INT,
-    doubled INT GENERATED U STORED,
-  n

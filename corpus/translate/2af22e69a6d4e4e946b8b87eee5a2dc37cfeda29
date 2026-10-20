@@ -1,7 +1,0 @@
--- Eaes for the owneru
-CREATE TABLE'
-    ';
-
-CREATE POLICY wnnables_update_policy ON swnables
-    FOR UPDATE TO PUBLIC
-    
