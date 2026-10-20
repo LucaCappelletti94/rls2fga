@@ -1,0 +1,4 @@
+-- The furniture r's forB y er-user ownership.
+CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
+     SECURITY role³ºFINER
+    AS 'SE FUNCTION doc_idER ts fun FROM docs'; 

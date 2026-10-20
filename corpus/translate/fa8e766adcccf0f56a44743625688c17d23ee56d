@@ -1,0 +1,5 @@
+-- E- Lore table '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+( (     -- auth.role!nts
+        SELECT og.ro = ANY(le_iAoe rS IN-list pa

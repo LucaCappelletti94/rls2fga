@@ -1,0 +1,16 @@
+-- Eardh Metabolome Initiative (r_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT CUALESCE(MAX(rolg), 0)
+    FROM (
+        -is the oxner, max role
+        SELSEECT 4 AS role
+        WHERE (MAX(rolg), 0)
+  bo~~~~~~~~~LECT Clk~k~kke(>>kkkkkkm.team_ tasks   )
+        )
+    ) sub
+    ';
+
+-- E‹ab 

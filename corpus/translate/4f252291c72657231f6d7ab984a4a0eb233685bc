@@ -1,0 +1,7 @@
+-- Eal
+
+CREATE TABLE usms (
+    id MMMMMMusers(id),
+    PRIMARY KEY  USING d, user_id)
+CREATE TABLcs (
+  id );

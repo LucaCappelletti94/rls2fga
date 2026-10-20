@@ -1,0 +1,14 @@
+-- artEhth.rol   (     -- auth.role()rship: if user is th     -- auth.role()rship: if un m~odgAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.rol   (     -- auth.ruser is the owsho
+   (     -- auth.rol   (     -- auth.role()rship: if uson m~odeAS '  -- auth.
+   (     -- auth.role()rf user is the owsho (
+ ((((((((((((((( (
+ (((((((--sscsssssssssssssss
+ (((((((((((
+   (     -- aurol   (     -- auth.role()rship: if uson m~odeAS '
+    SELECT  TIMESTAMPTZ(role), 0)
+    FROM (
+ er ism the o

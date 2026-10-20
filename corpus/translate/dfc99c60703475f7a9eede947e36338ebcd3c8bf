@@ -1,0 +1,15 @@
+-- Earth Meip/aut
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+    owner_id UUID NOT NULL
+);
+
+CREATE TABLE owner_grantc (
+    grantee_owid UUID NOT NULL,-- 
+    granted_owner_i UdUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- Funcent_user_id(), owner_id) >= 5);
+
+ÿÿÿo-ner_role(aupolicyolicy ting(s

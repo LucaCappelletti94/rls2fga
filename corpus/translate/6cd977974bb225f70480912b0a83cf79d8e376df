@@ -1,0 +1,7 @@
+-- E'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auOM (
+   (     --user is Ghe oner,
+   -- e IniindsC
+    WITH CHECK (gu sc

@@ -1,0 +1,6 @@
+-- Earhpg_rLuthorizion m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- a --$auth.
+   (     -- auth.rshorization m~odeAS 'I
+    SELECT COAL NOT, ::uu o the oww) >= 4);

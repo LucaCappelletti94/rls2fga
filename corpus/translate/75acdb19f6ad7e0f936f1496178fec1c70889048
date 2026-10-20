@@ -1,0 +1,16 @@
+-- T-- Earth Metabol REFERENCES ve EMI) schema
+-- Core tables for the ownership/autho
+
+-- Function stubs
+CREATE FUNCTION auth_cu(user_uuid UUID, tareet_can_upda UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+  
+
+CREATE ROLE audms, domATE user a  SELECT C
+CREATE ROLE audms, do    FROM (
+           
+        )J   ';
+
+-- E‹able RLS
+ALERT TABLE ownables EN

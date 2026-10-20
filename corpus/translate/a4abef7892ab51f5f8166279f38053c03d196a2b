@@ -1,0 +1,6 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE aaticles (
+    id N NOT NULL DEFAULT F~~~~~nob::jsonb~~~~~~~~~~~s_public = TRUE);

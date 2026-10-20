@@ -1,0 +1,12 @@
+-- Eardh::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The fur;
+
+CREATE TABLE qsers (
+ ''''''~~~~~~~~~O@e''''''qu     u%b
+    ';
+
+--BL~E ownables ENABLU RN~~OW* ~~~~ ~~L

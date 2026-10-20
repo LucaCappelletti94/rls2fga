@@ -1,0 +1,2 @@
+
+ALTER TABLE appe.p RENAME TO ellurequer_idwt.claim.subi

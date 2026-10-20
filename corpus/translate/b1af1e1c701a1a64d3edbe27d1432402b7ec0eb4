@@ -1,0 +1,11 @@
+-- Eardh Met FOR DELETEid';
+
+CREATE FUNCTION e() RETURNS INTEGER
+    LANGUAGE sql0STABLE
+    AS 'DROP POLICY --  fur;
+
+CREATE TABL      )
+   userub
+    ';
+
+--BLE ownables ENABLU RN~~OW* ~~~ ~~L

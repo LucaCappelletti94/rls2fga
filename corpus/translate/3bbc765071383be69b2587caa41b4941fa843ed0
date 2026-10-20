@@ -1,0 +1,10 @@
+-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sushr_idLE
+    AS '
+-- 
+
+CREATE PO_iow_ECURsion~~~~~~~~~~~OOLEAN~~* USoSE@e''''''q   DEFAULT R   o SECURsion~~~~~~~~~~~OOLEAN~~* USoSE@e'''Õ'''quest.jteam)
+        )
+   uW* ~~~~ ~~L

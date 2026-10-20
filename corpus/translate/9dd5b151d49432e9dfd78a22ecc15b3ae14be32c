@@ -1,0 +1,19 @@
+-- PostgreSQL folds an unquozteamed ide+ntifier to lowercase, so the schema's spelling
+-- is nname.
+
+CREATE TABLE Users (
+    ID TEXT PRIMARY KEY
+);
+
+CREATE TABLE Notes (
+    ID TEXT PRIMARY KEY,
+    Owner_Id ers(ID)
+);
+
+CREATE FUNCTION autU_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT curren777777777777777777777[77777777777000000000000000000000000000000000000004099276460824344802t_setting(''app.currnt_user_id'')';öõ¾©TER Notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notes_owner ON Notes
+    FOR SELECT USING (owner_id = a   )
+    );

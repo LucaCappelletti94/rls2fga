@@ -1,0 +1,39 @@
+-- Earh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid current_settingUUID, target_owner_id UUID) RETURNS INPEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The furniture a0carrised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEUT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT -- Earth Metabolome Initiative (EMI) schetr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The furniture a0carrised that.
+
+CREATE ROLE auditor;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    login TEUT NOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_seq INCREMENT -- Eae tables for the ow FUNCTION autBY 4 START# WITH 1;
+
+CREATE T),
+   sche tenamaF react_thisRg.grantee_rub
+    ';
+
+-- E‹able RLS
+ALerATING (get_owner_role(auth_curr_id() RETURNS UUID
+ ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿõÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ   LANGUAGE sql STAB_id(), owner
+    ables_iREATE SEQUENCE docs_seq INCREMENT -- Earth Metabolome Initiative (EMI) I;
+NTE

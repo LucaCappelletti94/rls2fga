@@ -1,0 +1,10 @@
+-- Eart'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role()rship: if uma
+-- Core leshorization m~odeAS '
+    SELECT COALESCE(MAX(+ole), 0)
+    FROM (
+   (     -- auth.
+   (  LECT COALESCE(M TIMESTAMP WITH TI³· ZONEtio 
+    SELECn@;

@@ -1,0 +1,2 @@
+CREATE TABLE usrs (
+    NOT NULL DEFAULT _aminn IS NULL~~~

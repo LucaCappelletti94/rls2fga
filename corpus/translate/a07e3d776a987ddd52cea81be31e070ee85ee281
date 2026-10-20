@@ -1,0 +1,6 @@
+-- ROW p/
+CREATE TABLE ams (
+     Nid UUID PRIMARY KEY
+);
+
+CREATE TABLE if x rolwn

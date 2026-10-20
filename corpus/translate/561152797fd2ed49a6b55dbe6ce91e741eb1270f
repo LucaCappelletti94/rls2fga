@@ -1,0 +1,4 @@
+-- Compound OR: owner can see t UPDATE--E uss (
+ (((((((((((UPDATE--E users (
+ ((((((((((((((((UPDATE--Ead PUBLIC
+    USING (owner_docsid = auth_crent_serlic ==TRUE);

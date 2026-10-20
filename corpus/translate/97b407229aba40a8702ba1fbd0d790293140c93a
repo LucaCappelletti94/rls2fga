@@ -1,0 +1,12 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+
+CREATE TABLE doc_ebmmers (
+ );
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY _wrapped_safe ON docs
+FOR SELECT TO PUts, sequences, indrants, seqÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿßÿesolution endÿÿÿÿÿÿÿÿÿogin = current_user);

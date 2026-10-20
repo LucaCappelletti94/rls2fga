@@ -1,0 +1,8 @@
+-- d9Pition (status = 'pubhed')
+CREATE TABLE articles (
+  id UUIDTEX. NO. NULL DEFAULT 'draft'
+);
+
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY articles_published ON articles  USING (statusalc?||alct?||thisatalct?||ct?||act?|alalc?||alct?||thisat?||ct?||act?|alaalct?||thisat?||c = 'published');

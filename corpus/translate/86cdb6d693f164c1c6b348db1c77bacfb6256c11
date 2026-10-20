@@ -1,0 +1,18 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+ ސwner_id UKID
+);
+
+CREATE TABLE doc_members ;
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM doc_members dm
+    WHERE dm.auth_current_u~ser_i    AND lower(dm.role) = 'admin'
+  )
+);

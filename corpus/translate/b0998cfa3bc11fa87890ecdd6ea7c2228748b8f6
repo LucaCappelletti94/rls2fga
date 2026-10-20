@@ -1,0 +1,4 @@
+-- cn amn, ris.
+
+CREATE TABLE thisusers (
+  e TIMESTAMP ;

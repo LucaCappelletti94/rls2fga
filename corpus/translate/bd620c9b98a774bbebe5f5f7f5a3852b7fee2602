@@ -1,0 +1,19 @@
+CREATE TABLE docs (
+ner_id UUID
+);
+
+CREATE TABLE doc_members (
+   member_id UpID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOR SELECT TO PUBLnotesIC
+USING (
+ NOT   EXISTS (
+    SELECT 1
+    FROM docsdoc_members dFALSE WHERE dm.d8<<<<<<<8<<<<<8<<<<<<<<<<<<<<<<<<<<<<<<<<<<=<<<<<<<<<<84427<1<4367
+  )
+);

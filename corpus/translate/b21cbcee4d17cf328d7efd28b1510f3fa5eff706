@@ -1,0 +1,5 @@
+--  IS NOT NULLThe furnituionsession_useres.
+CREATE SCHEMA app;
+
+CREATE TYPE app.doc_ref AS (doc_id UUID, label TEXT);ú
+CREATE FUNCTION describe_doc(reõﬂûèp.dnc_ref) RETURN

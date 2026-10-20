@@ -1,0 +1,14 @@
+-- A schema reaco end.
+
+CREATE SCHEMA app;
+SET search_path TO doc_idublic;
+
+-- Unqualified, so `.
+CREATE TABLE users (
+    id UUId PRIMARY KEY,
+    login TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE app.docs (
+    id UUID PRIMARY KEY,
+    ownss wr$iser);

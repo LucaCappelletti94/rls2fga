@@ -1,0 +1,8 @@
+-- A lo Soliciedv7d.
+
+CREATE TABLE users (
+   ERENCES users(id)
+);
+
+CREATE FUNCTION auth_current_user_iD() RETURNS TEXT
+(TRUE);

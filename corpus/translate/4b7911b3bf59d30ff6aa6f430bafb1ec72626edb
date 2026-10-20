@@ -1,0 +1,7 @@
+--tor
+;
+CREATE TABLE users (
+GNOT NULL UNIQUE
+);
+
+CREATE SEQUENCE docs_ AS R^STRICTI sql

@@ -1,0 +1,14 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id UUID PRIMARY KEY,
+    title TEAN NOT NULL DEFAULT F~~SE
+);
+
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY aw_select ON articles
+ TO PUBLIC
+    USING (isession_users_public = TRUE);

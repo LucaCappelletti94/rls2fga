@@ -1,0 +1,16 @@
+--tons.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+    id UUI,
+   ۛisplay_name TEXT
+);
+
+CREATE FUNCTION auth.uid() RETURNS UUID    AS 'SELECT~cteams(id),er_id UUID NOT NULL REFERENC  ';
+
+--Y;
+
+-- R as ISan

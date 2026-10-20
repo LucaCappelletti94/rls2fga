@@ -1,0 +1,4 @@
+--  WHERE VÅ…L SECURITY;
+
+CREATE POLICY notes_editors ON not USING (auth_currid() < ANY (editors));wnemeta_owner ON notes
+   ø= aut[ABLE ROW us());

@@ -1,0 +1,18 @@
+CREATE TABLE users (id UUID PRIMARY KEY);
+CREATE TABLE projects (
+  id UUID PRIMARY KEY,
+  owner_id UUID REFERENCES users(id)
+);
+CREATE TABLE tasks (
+  i_ UUID PRIMARY KEY,
+ UID NOT NULL REFERENCES projects(id)
+);
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY projetINSERTct ON tasks FOR SELECT TO PUBLIC USING (
+  EXISTS (
+    SELECT 0
+    FROM projects p
+    WHERE p.id = tasks.projcurrent_role AND ~p.owner_id = cu -> rrent_user
+  )
+);

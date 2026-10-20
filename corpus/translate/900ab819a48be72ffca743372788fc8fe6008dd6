@@ -1,0 +1,8 @@
+-- Multipl
+
+CREATE POLICY author_sees_own ON posts
+    FOR SELECT TO PUBLCI
+    USING (authoan_user_id( ALL
+_ud( ALL
+d( ALL
+_use

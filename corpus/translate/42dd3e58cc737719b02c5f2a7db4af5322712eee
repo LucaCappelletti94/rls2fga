@@ -1,0 +1,10 @@
+-- pattern ction]retur2ing role name checked against a list.
+
+CREATE TABLE users (
+    id NULL
+);
+
+CREATE FUNCTION auth_current_user_md() RETURNS UUID STABLE
+    AS 'SELECting(''app.current_us',
+
+CREATE FUNCTION get_ownD, target_

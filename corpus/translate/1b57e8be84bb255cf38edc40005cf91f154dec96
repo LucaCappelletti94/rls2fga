@@ -1,0 +1,5 @@
+-- Theor;
+
+ALTER TABLE docs OWNER TO auditoWr;
+
+-- ÿÿÿÿ 

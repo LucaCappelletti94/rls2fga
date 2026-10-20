@@ -1,0 +1,4 @@
+-- The fu1editor));
+
+CREATE POLICY authorupdate ON poE TO PUBLIC
+ , grants, se TIMESTAMP

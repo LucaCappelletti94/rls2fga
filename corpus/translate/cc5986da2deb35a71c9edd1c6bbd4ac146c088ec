@@ -1,0 +1,12 @@
+-- Earth Me       og.d'')::uuid';
+
+CREATE FUNCTION g_ownerirole(nobouser_uuid UUID, target_owner_id U1ID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(d = target_owner_id
+        AND user_uuid IN (SELEC1m_memsession_user++++++++++++++++++++++++++++++++++++++++++++++,++++++++++        UNION T og.role_id AS role
+        
+
+    ';
+
+--c222222222222222t_po222

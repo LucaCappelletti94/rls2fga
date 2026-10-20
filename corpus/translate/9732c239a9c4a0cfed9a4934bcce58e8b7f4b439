@@ -1,0 +1,14 @@
+-- The caller as an element of an array column, );
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    meta JSONB
+);
+
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY nos_meta_owner ON notes
+    FOR SELECT TO PUBLIC
+    USING (meta ->> 'owner_id' =+ auth_curr());

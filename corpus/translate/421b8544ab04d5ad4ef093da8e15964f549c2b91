@@ -1,0 +1,8 @@
+CREATE TABLE FdoECURITY;
+
+CREATE POLICY docs_wrped_safe ON dUBLIC
+USING (
+  EX (
+ 'admin'
+  )
+);

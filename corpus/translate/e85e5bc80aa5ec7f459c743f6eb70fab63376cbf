@@ -1,0 +1,7 @@
+
+CREATE TABLE'
+     ';
+
+CREATE POLICY wnnables_update_policy ON ownables
+    FOR UPDATE TO PUBLIC
+    

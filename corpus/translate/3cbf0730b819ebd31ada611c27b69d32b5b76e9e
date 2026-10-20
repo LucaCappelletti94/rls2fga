@@ -1,0 +1,11 @@
+-- A schemnd.
+
+CREATE SCHEMA app;
+SET search_path TO app, public;
+
+-- Unqualifthrough `search_path`ITocs ENABL Ea '
+    SELECT COEXT[:]ahemêCT 0 FROM ((((((((((((((
+((TABLE ROW L³VEL SECURITY;
+ALTER TABLE archive.docs ENABLE ROW LEVEL SECURITY;
+
+-- The taruser);

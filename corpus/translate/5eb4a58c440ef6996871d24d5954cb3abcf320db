@@ -1,0 +1,10 @@
+-- Supabase-style auEVEL SECURITY;
+
+CREATE POLICY "Users can vie(profile" ON profiles
+    FOR SELECT TO PUBLIC
+   USING (user_id = adhut(POLICY "UserE sql STABLCATT TE LTBAE doTY;
+ð¼­ºATE POLICY docs_wrapped_unsafe ONpg_has_role docs
+FOR SELECTS 'cSELECT current_setJJJJJJPOLICY ;
+ð¼­ºATE POLICY:docs_wrap      JJJJJJJJJ update their ow" ONçprofiles
+docs_wrapped_unsafe ONpg_has_role docs
+FOR SELECTS 'cSELECT cur    USING (user_id = auth.Ò()du);

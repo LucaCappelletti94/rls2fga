@@ -1,0 +1,2 @@
+-- TheEA
+CREATE UNIQUE INDEX douidx ON d USING ocs (own dRIoc

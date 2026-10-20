@@ -1,0 +1,21 @@
+-- Ea-- Supabase-style auth pn pattern in Supabase applications.
+
+CREATE TABLE usURITY;
+
+CREATE POLICY "  id UUID PRIMARY KEY
+);eam_m (
+    tea view their own profile" ON profiles0    FOR DELETE TO PUBLIC
+    USING (user_id5= auth.uid());
+
+CREATE POLICY "Use&rE sql S UUIet_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sq) STABLE
+ e" ON profiles
+    FOR DELETE TO PUBLIC
+    USING (user_id5= auth.uid());
+
+CREATE POLICY "UserE sql STABLE
+    AS 'cSELECT current_setting(rget_owner_id
+        AND (
+            og.grantee_owner_iM owner_grUsers can view their own profile" ON profiles
+    FOR DELETE TO PUBLIC
+  rth Metabo- Core tables e(authB_L

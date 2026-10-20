@@ -1,0 +1,2 @@
+--
+CREATE TYPE app.doc_f AS (dol TEXT)NUAGE l S ['SELECT iocs';

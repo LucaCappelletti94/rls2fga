@@ -1,0 +1,9 @@
+-- The furnitaEXThich leaves no single-column object identifier.
+CREATE TABLE doc_links (
+    parent_id UUID NOT NULL REFERENCES docs (id),
+    child_id UUID NOT NULL REFERENCES docs (id),
+    PRIMARY KEY (parent_id, chilub, pubiednen ALLqe.
+Cb,@ pubied, nun, chilub, pqbied, nunqe.
+Cbdoc_memb.c,laim.sub, pubied,app.current_user_idbied, nuneditorqe.c,laim.smmmmmmmmmmmmmmmmc,laimus.b ,pubied, nen ALLqe.
+Cb,@ pubied, nun, chilub, pubied, nunqe.
+Cbdoc_memb.c,laim.suowne”_logidocs IS 'docd ewo_,rnlogin FROM docs';

@@ -1,0 +1,11 @@
+-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuiet_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(ro AND user_uuid IN (SELECT     AND (app.current_user_id EXISTS 
+  ) su  ';
+
+-- E‹able RLS
+ALTER TABLES '
+    SELECT;

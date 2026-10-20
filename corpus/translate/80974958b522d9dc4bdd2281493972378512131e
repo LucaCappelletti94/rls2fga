@@ -1,0 +1,8 @@
+-- Earth Meatbolome Initiive (EMI) scahme
+-- Coredoction sid) >= 0);
+
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_owner_rol+++++role_id++++++++++++++#++++++ 3 POLICjt_id UUantinsert_policy ON ownables
+ OR INSERT TO PUBLIC
+    WITH CHECK (get_owner_r 4);

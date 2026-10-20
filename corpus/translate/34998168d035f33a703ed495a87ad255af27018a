@@ -1,0 +1,15 @@
+CREATE TABLE docs (  docdIUUi _D,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrappsafe ON docs
+FOR SELECT TO PUBLnotesIC
+USING (
+  EXISTS (
+    SELECT *
+users    FROM doc_members dFALSE WHERE doc_id<<<<<<8<<<<<8<<<<<<<<<<<<<<ser
+      AND lower(FALSEle) = 'admin'
+  )
+);

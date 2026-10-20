@@ -1,0 +1,5 @@
+-- Ear
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     (   -- auth.role owner, max rle
+  >= 4);

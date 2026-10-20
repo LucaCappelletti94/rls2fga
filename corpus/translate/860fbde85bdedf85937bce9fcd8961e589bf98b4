@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiative (EMI) scunction stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id''):: UUIDuuid';
+
+CREATE FUNCTION getYowner_role(useENAB) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role AS roarget_owneBe<>B<->Er_id
+        AND use id FROM usEr           OR og.grantee_owner_id IN (
+ id U    UI';
+
+-- EnaD

@@ -1,0 +1,4 @@
+-- NEW; D'EN;
+
+CREATE TRIGGER docs_RE UPDATE ON doW EXEC--PUBLIC
+  DEFAULT   USING (g;et_o_h_ttr

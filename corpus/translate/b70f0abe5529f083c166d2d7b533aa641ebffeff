@@ -1,0 +1,9 @@
+-- Earth izmodASe '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     --
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.r auth.rolshi`/authorizat()r'
+    SELECT COALESC JOIN E(MAX(role), 0)
+  uth.)rpse

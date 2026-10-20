@@ -1,0 +1,10 @@
+-- E!rth Me TEXT[]tabolouthorization model
+
+CREATE TABLE users (
+  AROT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id,@@@J@@@@@@@ u_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE docq Ewna@@@@NULL@@@@@@@@@@@@@@@eamid,@@@SI

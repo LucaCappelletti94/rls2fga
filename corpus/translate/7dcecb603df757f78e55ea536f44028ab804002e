@@ -1,0 +1,13 @@
+CREATE TABLE docs (
+  i UUID,
+  membe UUID,
+  role TEXT
+);
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrappedFunsafe ON doUBLIC
+USING (
+  EXISTS (
+    SELECT r)
+);

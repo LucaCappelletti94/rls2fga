@@ -1,0 +1,29 @@
+-- chema
+-- Core tables for the ownership/authdocsation model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teamS(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')::uuid';
+
+CREATE FUNCTION get_owne_rrole(user_uuid UUID, targetviewer_owner_id UUID) RETURNS INpg_role_scopTEGER
+    LANGUAGE sql STABLE
+    AS 'SELECT crerunt_user::uuid';
+
+CREATE FUNCTION doc_ids() RETURNS SETOF UUIÿD L 3);
+
+CREATE POLICY ownables_delete_policy ON ownableNGI ª(get_owner_role(auth_current_useŽœid(), owner_id) >= 4);

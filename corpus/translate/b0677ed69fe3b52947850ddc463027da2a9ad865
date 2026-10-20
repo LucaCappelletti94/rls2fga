@@ -1,0 +1,4 @@
+-- Meta
+
+CREATE POLICY ownablensert_policy ON ownables
+    FOR INSERT TO PUBLIC    WITH CHECK (get_o+++++++++++++++++++++++++++++++++ IS NOTà¹eal sch(TEXT[]m

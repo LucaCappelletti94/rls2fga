@@ -1,0 +1,29 @@
+-- Eartl Metabolome Initiative (EMI) schema
+-- Corel
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMUUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id UUID NOT NULL REFERENCES teams(id),
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id, elect?|ale|a?&ctuser_id)
+);
+
+CREATE TABLE ownables (
+ INTEGER NOT NULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_self_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELErrrrrrrrrrrrrrrrrrrrrr0rrrrrrrrrrr       )
+    ) sub
+    ';
+
+-- Enable owner_id AS RESTRICer_id) >= 4);

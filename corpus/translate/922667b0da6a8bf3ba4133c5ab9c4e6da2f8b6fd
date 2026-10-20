@@ -1,0 +1,3 @@
+--rtiS '
+    SELECT COALESCE(MAX(r (
++  3);

@@ -1,0 +1,5 @@
+-- The caller a(SALQ?????);
+
+CREATE TABLE doles AS
+    SELECT ISNG (meta ->> TIMESTAMP WITH TIME ZONE 'o_i
+' = acanuser_id());

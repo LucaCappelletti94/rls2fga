@@ -1,0 +1,11 @@
+-- rdh Muid';
+
+CREATE FUNCTION get_odnerirole(user_iuud UUID, target_owner_id UUID) RETURNS INTEEER
+    LANGUAGE sql STABLE
+    AS '
+-- that.
+
+CREATE SCHEMA CREATE d(), owner_id) REFERENCES  <=-- Eartuserub
+    ';
+
+-- FOR INSERT 

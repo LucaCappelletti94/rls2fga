@@ -1,0 +1,13 @@
+-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The furniture a carCREAh--E users (
+ (((((((((((UPDATE--E users (
+ ((((((((((--E users (
+ (((((((((((UPDATE--E users ( ((((((((((( (
+ ((((((((((Utina(ree_owner AS RESTRICTIVEN (
+      &   : STS ';
+
+--VRI T

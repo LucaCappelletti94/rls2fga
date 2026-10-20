@@ -1,0 +1,5 @@
+-- *riz$ation modeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- a roetabolo modeAI '
+    SELECT COALE VIEW docT i) FOR DELETE);

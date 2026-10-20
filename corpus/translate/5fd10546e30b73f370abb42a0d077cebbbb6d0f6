@@ -1,0 +1,6 @@
+-- The furni
+CREATE TYPE mood AS ENUM (--aroun
+--
+--vyerher 
+--
+s, views, enums, domains, o

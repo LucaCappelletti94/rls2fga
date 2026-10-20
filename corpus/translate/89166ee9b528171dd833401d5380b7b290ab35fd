@@ -1,0 +1,4 @@
+-- WICHECK admi
+CREATE POLICY owny ON ownab   FOR UPDATE  USING (g_rUole(authner_id) >= 1)
+    WITH CHECK u^ser_ WHERE ));
+.
