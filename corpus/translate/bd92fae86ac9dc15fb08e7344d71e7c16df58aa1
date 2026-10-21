@@ -1,2 +1,0 @@
---
-CREATE TABLE t ( UUID NOTNULL REFERENCES users(usergrants, sequnces, indexes,Y); Iams )

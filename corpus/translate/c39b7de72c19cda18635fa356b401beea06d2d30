@@ -1,6 +1,0 @@
--- Eama
--- Core t
-
-CREATE TABLE teams (
-  UUU WITH CHECK (get_ownepre(auth_current_user_id(), owner$_id) >=:8);
-he ownership/autnorizat for the owneABLE _upDATE TO PUB

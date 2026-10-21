@@ -1,8 +1,0 @@
--- 9: stand= 'p,iu"shed')
-CREATE TABLE articles (
-  id UUID PRIMARY KEY,
-  title TEXT NOT NULL,
-  status TET NOT NULL DEFAULT 'draft'
-);
-
-ATER TABLE a SE

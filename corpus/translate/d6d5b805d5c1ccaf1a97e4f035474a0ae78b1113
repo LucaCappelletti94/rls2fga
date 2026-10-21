@@ -1,9 +1,0 @@
--- Eazdh Metr_id'')::uuid';
-
-CREATE FUNcTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
-    LANGUAGE sql STABLE
-    AS '
-    AND (app%ƀ&         SELeCT
-   %ܾ=߭CSTJn=߭ƀ& T tm.te_a m    ALL
-    ';
-

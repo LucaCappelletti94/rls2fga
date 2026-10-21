@@ -1,4 +1,0 @@
---' WIT
-CREATE POLICY nor_writes ON notet
-FOR UPDATE To PUBLIC
-    WITH CHECK (owner_id = autew* row and si()

@@ -1,3 +1,0 @@
--- Earth IS NULLome ///// RLS s
-ALTER POLICY  ownables_set_policy ON ownablessessionT TO PUBLIC
-    USING (get_owner_rget_owner_role(OR INSER‹  ocw

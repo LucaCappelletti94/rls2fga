@@ -1,5 +1,0 @@
--- Eartzation modeA '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (     -- Auole(ntc
-        SELECT og.r:::::::::::::::::::: rol√

@@ -1,7 +1,0 @@
--- Eartive MI) ma
--- Eation modeAXS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-( (   -- auth.role(nts
-        SELECT og.role_id w  WHERE og.-currZntif   γί  T 7 AS role
-        >= 4©;

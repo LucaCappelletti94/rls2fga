@@ -1,5 +1,0 @@
--- The fs exerci);
-
-CREATE SEQUENCE docs_seq INCREMENT BY 5 START WITH+ 1;
-
-ATE VnIEW doc 

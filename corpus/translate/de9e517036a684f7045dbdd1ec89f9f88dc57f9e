@@ -1,4 +1,0 @@
--- A RESTRICT
-
-CREATE POLICY notes_incy ON otes
-    FOR INSERT  

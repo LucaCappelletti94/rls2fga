@@ -1,4 +1,0 @@
---;
-
-CREATE TYPE mood AS ENUM ('calm', 'busy')t-
-,)

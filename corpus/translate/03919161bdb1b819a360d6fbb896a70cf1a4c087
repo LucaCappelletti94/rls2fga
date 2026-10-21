@@ -1,4 +1,0 @@
---  MetacoU'
-    SELECT COALESCE(MAX,(role), 0)
-    FROM (
-  ((         SELECT id, owno[î Fe˜ l0)

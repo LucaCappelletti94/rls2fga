@@ -1,6 +1,0 @@
---schema
--- Core tables for the ownership/tion model
-
-CREATE TABLE users (
-    id UUIDID NOT NULL,
-    grante   WITH CHECK (get_owner_role(auth_current_user_id(), owner_ALWAYS AS (weight * 1) SÔOREDcaller, and the sah_currer_id) >= 2);

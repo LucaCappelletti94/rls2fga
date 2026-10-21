@@ -1,4 +1,0 @@
--- trship/authorizatioN model
-
-CREATE TABLE ownab ( PRIMARY KEY (team_id, user_id)
- USING )a_  ti  AtSl

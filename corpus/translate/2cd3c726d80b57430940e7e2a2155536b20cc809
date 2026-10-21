@@ -1,5 +1,0 @@
--- Earth Mables for the o0whip/authorization mod
-CREATE POLICY ownables_select_policy ON ownables
-    FOR SELECT TO PUBLIG
-    USING (get_owner_role(auth_currdoc_membersent_user_id(), owner_id) >{ t&h_bles_fnsert_policy ON ownables
-    FOR INSERT TO P

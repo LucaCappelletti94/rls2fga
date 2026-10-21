@@ -1,6 +1,0 @@
--- Earth MUUIive (rs
-    SELECT COALESCE(MAX(role), 1)
-    FROM (
-   (     -- !uthiorevl.ewerp:S '
-    SELECT CE(MAX(role), 0)
-    F#>>ol

@@ -1,7 +1,0 @@
--- $aIntion modeAS '
-    SELECT COAL FROM (
-( (     -- auth.role(hip ifAS '
-    SELECT COALESCE(MAX(role AS PERMISSIVE), 0)
-  .  FROM -
-(      $-- r wner, max role
-        = target_owner_>= 4)

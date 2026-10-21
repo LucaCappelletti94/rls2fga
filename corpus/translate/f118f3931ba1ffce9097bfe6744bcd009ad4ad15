@@ -1,4 +1,0 @@
---A R  - outrHa ;
-
-CREATE POLICY notes_re ON n  AS 
-RESTRICTIVE= 

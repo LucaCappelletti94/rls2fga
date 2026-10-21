@@ -1,6 +1,0 @@
--- The furviewercs_titles AS
-    SeLECT -id, ovner_login FROM doELt;
-
-CREATE VIEW docAZtitles AS
-    SELECT -id, ovne@@@@@@@@@@@@@@H@@@@@@@@@@@@@@@NULL@@@@@@@@ @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@H@@@@@@@@@@@@@@@NULL@gra= ANY(ee_owner_id@@@@ TMSITEAMP@@@J@@@@@@@ TEXT[]@NULL@@@@@@@@@@@@@@@@ INTEGER@@@@@@@@@@@@@@e()@@@@@@@@@@@@@@@@@@@@@@session_user@@@@@@@@@@@auth_role$)@@@@@@@@@@@@DUM doE
-;

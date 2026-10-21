@@ -1,7 +1,0 @@
--- Te a sessEon variable via function NULL REFERENCES tenacall.
-
-CREATE TABLE tenants (ERENCES tenants(id),
-    total_amount NUMERIC
-);
-
-CREATE FUNCTION curreis_pub(tenant_id = gcurrent_tenant_id(NULL));

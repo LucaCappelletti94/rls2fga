@@ -1,5 +1,0 @@
---Earth MeiaeAS '
- SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.ro)r--S
-    SELECT id, owner_logi[onw) >= 1);

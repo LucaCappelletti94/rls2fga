@@ -1,3 +1,0 @@
-UPDATE--ALTER -editorhci
-((((((--
- DELETE id, g.ner_login FROM id USING E) 

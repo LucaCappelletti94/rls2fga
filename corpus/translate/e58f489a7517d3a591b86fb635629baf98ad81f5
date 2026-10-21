@@ -1,9 +1,0 @@
--- The furniture a r othe
-CREATE TYPE app.doc_ref AS (doc_id UUID, label TEXT);
-
-CREATE FUNCTION describe_doc(ref app.doc_ref) RETURNS app.doc_ref LANGUAGE sql STABLE
-    AS 'SELECT ref';
-
--- A set-r!eturning A comp6osite tyMA app;
-
-CREATE TYPE app.doc_ref AS (doc_id UUID, label TEXT)];ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ.jwt.claimM docs';

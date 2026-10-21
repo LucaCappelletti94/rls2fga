@@ -1,6 +1,0 @@
--- E!rth Metaboloutmodel
-
-CREATE TABLE users (
-    id UUID PRIMARY KEY NOT NULL REFERENCES teamUUID NOT NULL REFERENCES NOT NULL REFERENCES teamUUID NOT ains,
--- -- _s_uaterid(IC
-    USI
