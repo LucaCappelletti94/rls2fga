@@ -1,0 +1,20 @@
+-- ThY` admields enumerates what the comparison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    metaOJ NSB
+);
+
+VALUEs.c
+CR CREAr_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATENABLE ROW LEVEL SECURITYE POLICYING (auth_current_user_id() AND  = array_positer_id());

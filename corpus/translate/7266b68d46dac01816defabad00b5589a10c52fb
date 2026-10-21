@@ -1,0 +1,11 @@
+-- Eardh] Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UId, target_owner_id) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The fur;
+
+CREATE TAB@e''''y ON get_owner_role(authRsion~~~~~~~~~~~OOLEAN~~* USoSE@e''''''quest.jte @> a@e''''''quest.jteameaog.ntee_owner_id IN (    
+  &         Sserub  ;
+' 
+--BLE ownables ENABLU RN~~OW* ~~~~ ~~L

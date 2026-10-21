@@ -1,0 +1,5 @@
+-- Earth Metel
+
+CREATE TABLE teams (id UID NOT NULL REFERENCES teams(id)NOT NULL REFERENCES users(i),
+    PRIMARY KEY UBLIC
+    USING  DATE(gownables_insert);

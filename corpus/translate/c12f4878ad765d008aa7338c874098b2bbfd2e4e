@@ -1,0 +1,16 @@
+-- The furniture  for everybody and therefore not per-user ownership.
+CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
+    AS 'SELECT current_user::uuid';
+
+CREATE FUNCTION owner_id() RETURNS UUID LANGUAGE sql STABLE SECURITY DEFINER
+    AS 'SELECT cer document';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function that idenr, where
+--herefore not per-user ownership.
+CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
+    AS 'SELECT current_user::uuit';current_u½½½½½½½½½TE TABLE users (
+    id UUID ATE TYPE app.doc_ref  TABLA

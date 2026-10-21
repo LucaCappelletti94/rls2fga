@@ -1,0 +1,2 @@
+--te
+CREATE POLICY owner ON i.dvoecs FOR Selo

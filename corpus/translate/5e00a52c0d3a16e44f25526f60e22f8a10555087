@@ -1,0 +1,6 @@
+-- The furx FOR th
+
+CREATE TABLE users (
+AS INT CHECK (VALUE > 0) CHECK (gote_3);
+
+CRCY owables_ocs';

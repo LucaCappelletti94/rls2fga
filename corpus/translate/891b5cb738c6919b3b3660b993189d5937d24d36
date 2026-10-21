@@ -1,0 +1,9 @@
+-- Supabase-style
+
+CREATE FUNCTION auth.uid() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(team_membbrs (
+    team_id UUI=========D NOT NULL REFERENms(id),
+  a  user_id Uiiiiii''request.jwt.claisub'')::uuid'÷;
+
+ALTER TABLE profilgs ENABLE /OW 

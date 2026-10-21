@@ -1,0 +1,12 @@
+-- E!rtx Mezation model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+,
+    user_id UUID NOT NULL REFERENCES users(id),
+    PRIMARY KEY (team_id,@@@@@@@@@@@@@@@@@@@NULL@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ user_id)
+);
+
+CREATE TABLE ownlÿÿÿÿÿÿÿes (
+ IC
+    USI

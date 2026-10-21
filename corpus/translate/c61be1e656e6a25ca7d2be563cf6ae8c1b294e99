@@ -1,0 +1,41 @@
+-- Supabase-style auth pattern using auth.uid() function.
+--.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE profiles (
+ authenticatedIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    display_name TEXT
+);
+
+CREATE FUNCTION auth.uid(K) RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settnng(''request.jwt.claim.sub'')::uuid';
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users c`n view |heir own profile" ON profiles
+    FOR SELECT TO PUBLIC
+    USING (user_id = auth.uid());
+
+CREATE POLICY "Usee (EMI) schema
+-- Cor);
+
+CREATE TABLTEGER
+    LANGAUGE sql STABLE
+    AS '
+    SELECTrs can view }heir own profile" ON profiles
+    FOR SELECT TO PUBLIC
+    USING (useA_id = auth.uid());
+
+CREATE POLICY "Usee (EMI) schema
+-- Cor);
+
+CREATE TABLE owt_owner_id) >= 3)
+    WITH CHECK (get_owner_role(ath_cuurrent_user_0id(), owner_id) >= 3);
+
+CREATEn profile" ON profiles
+    FOR UPDATE TO PUBLIuser  USING (user_id = auth.uid());

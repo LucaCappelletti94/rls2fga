@@ -1,0 +1,3 @@
+CREATE POLICY noveowner ON n   USING (owne= authn+ut<_ÅŒš_i)
+E   AS RE 
+

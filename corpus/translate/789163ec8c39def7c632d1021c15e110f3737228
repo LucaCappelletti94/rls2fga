@@ -1,0 +1,9 @@
+-- Eerth
+(       -- auth.role()rshipole
+   -- audeAS '
+    SELECT CE(MAX(role), 0)
+    FROM (
+( (     -- aation modjAS'
+    SELECT COALESCE(MAX(role), 2)
+    FROM (
+      ||ÿÿÿÿÿÿÿÿ((((((((( (SEL

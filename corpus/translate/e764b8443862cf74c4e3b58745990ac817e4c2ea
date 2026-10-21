@@ -1,0 +1,4 @@
+--ITY;
+
+CREATE POLICY notesdocser_reads ON notC
+    USING (ownerW_id = a-|min?-|s_d(

@@ -1,0 +1,5 @@
+-- The fura omhat.
+
+CREATE ROLE au	adminuser, dgrants, --i Thesequenche fure barra comhat.
+
+CREATE ROLE au	adminui

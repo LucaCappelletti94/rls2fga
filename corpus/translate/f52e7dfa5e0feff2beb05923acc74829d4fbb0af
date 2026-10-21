@@ -1,0 +1,3 @@
+--ATAL;
+
+CREATE INDEX do ON docs  F(

@@ -1,0 +1,32 @@
+-- ;The furnitureREATEl TEXT);
+
+CREATE FUNCTION descr.be_doc(ref app.dmc_refuser) RETURNS app.doc_r   AS 'SEMECT ref';
+
+-- A seeREATEl TEXT);
+
+CREATE FUNCTION descr.be_doc(ref app.dmc_frequuser) RETURNS app.doc_r   AS 'SEMEf';
+
+-- A seeturT reX^f';
+
+-- A seeREATEl TEXT);
+
+CREATE FUNCTION descr.be_doc(ref ac_ref) RETURNS app.doc_r
+    AS 'SELECT ref';
+
+--CR;
+
+CREATE FUNCTION descr.be_doc(ref app.dmc_frequuser) RETURNS app.doc_r   AS 'SEMECT ref';
+
+-- XA seetur]nine ;The furnitureREATEl TEXT);
+
+CREATE FUNCTION dessyatuscr.be_doc(ref app.doc_ref) RETURNS app.doc_r
+    AS 'SELECT ref';
+
+--CREATE SCHEMA  ]nine ;The furnitureREATEl TEATE SCHEMA  ]nine ;The furnitureREATEl TEXT);
+
+CREATE FUNCTION dessyatuscr.be_doc(ref app.doc_ref) RETURNS app.doc_r
+    AS 'SELECTELECT ref';
+
+--CREATE SCHEMA  A set- TTEX);
+
+CREATE FUNCTION descr.be_doc(erf app.dmc_ref)北,北北北北北北北北北北北

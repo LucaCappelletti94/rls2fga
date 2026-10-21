@@ -1,0 +1,16 @@
+-- Earth Metabolome Initiative (EMI) schema
+-- Core tablerh is th m~odeAS '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.role()rship: if user is1the ho
+   (     -- au(h.rol   ( le()rship: useri s th m~odeAS '
+    SELECT COALESCE(M(role), 0)
+    FROM (
+   (     -- auth.
+   (     -- auth.role()rsjip: if user is1the ownera
+-- Core tablesho
+   (     -- auth.rol   ( le(horization m~odeAS '
+ Initiative (EMI) schema
+-- Core tables thisfor the ownership/ (
+   (   auth.rip: if user is FFFFFFFFFFFFFFFFFFFFFFFFFFF

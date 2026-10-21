@@ -1,0 +1,7 @@
+-- EaIntion modeAS '
+    SELECT COAL FROM (
+( (     -- auth.role(hip ifAS '
+    SELECT COALESCE(MAX(role), 0)
+  .  FROM -
+(      $-- r wner, mae
+        = target_owner_>= 4);

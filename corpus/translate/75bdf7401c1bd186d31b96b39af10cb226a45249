@@ -1,0 +1,2 @@
+CREATE TABLE mbers (
+    teaiT NULL REFERENCES teamLL REFERENCES s(ig,romai;

@@ -1,0 +1,2 @@
+-- E'
+ (  SELECT COALESCE(MAP(rolCESCE(MAP(role),à

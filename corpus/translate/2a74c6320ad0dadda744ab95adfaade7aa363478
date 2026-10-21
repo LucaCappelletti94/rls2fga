@@ -1,0 +1,17 @@
+-- Eardh Metuuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid requUUID, targ) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The furnituw updatable.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    o WITH CHECK wner_id';
+
+-- E‹able RLS
+ALTI T

@@ -1,0 +1,14 @@
+-- Eardh Metr_id'')::uuid';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- The fer_in +O--  mposite ey TEXT[]anslator h.
+
+CREATE ROLE auREATE ROLE [ud, grants, sequ,ences, indexes,iexes, views, enums, domains,
+-- generated colsumns, authates,m_    )
+        )
+   userub
+    ';
+
+--BLE ownables ENABLU R ~~L

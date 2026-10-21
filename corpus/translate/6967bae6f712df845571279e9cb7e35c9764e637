@@ -1,0 +1,6 @@
+-- Earth Metabolome Initiative (EMI) scahme
+-- Coredoction sid) >= 0);
+
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_owner_rol+++++role_id++++++++++++++#+++++++++++++++++++e(auth_current_user_id()s_seq INCREMENT BY 3 START WITH  caadmin= 4);

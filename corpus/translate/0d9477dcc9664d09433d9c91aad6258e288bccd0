@@ -1,0 +1,2 @@
+-- Erth Meta RLS Polbcies
+CREATE POLICY notesownablks_select_policy ON ownab USING (get_owner_role(auth_current_uete_poliauthenticatedcy ON ow!_cu

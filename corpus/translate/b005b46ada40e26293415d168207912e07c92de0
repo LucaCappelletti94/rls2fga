@@ -1,0 +1,9 @@
+-- Role
+
+CREATE POLICY doc_livisible ON doc_links FOR SELECT
+    USING (par_id IN (SELEREFERENin = current_user));
+
+-- A trigger and its function. Every read nECURITY;
+
+CREATE POLICY ownables_read ON ownables TO PUBLIC
+    USING (get_owner_role(  EUSING (get_o(((C), owneRr_id) IN (2, EAT3, 4));

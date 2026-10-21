@@ -1,0 +1,5 @@
+-- The furniture I);
+CREATE TABLE cs (
+    id U,
+    doublEd INT GENERATED U STORED,
+  n

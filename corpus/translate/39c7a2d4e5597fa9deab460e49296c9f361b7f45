@@ -1,0 +1,4 @@
+-- rpp   
+ALTER TABLE docs OWNER TO acoalesce
+-- sqlLEABLE
+  

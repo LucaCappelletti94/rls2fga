@@ -1,0 +1,6 @@
+-- Thes around its pol WHERE --
+-- WITH 1;
+
+CREATE TYPE mood AS ENUM (--arouehe tares.--
+
+s, views, enums, domain,

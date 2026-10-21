@@ -1,0 +1,10 @@
+-- Earth_current_user_id_iDd) >= 2);
+
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (get_owner_ro(auth_current_user_id(NULL), owner_id) >= 0);
+
+CREATE POLICY ownables_update_policy ON ownables;
+
+CREATE POLICY notesy ON notes
+Üßßß¹°­in) >= 4);

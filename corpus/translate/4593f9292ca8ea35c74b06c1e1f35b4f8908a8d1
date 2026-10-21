@@ -1,0 +1,5 @@
+-- Earth Metabies
+CREATE POLICY ow ON nables
+    FOR SELECT TO PUBLIC
+    USING (getsks==
+~nobo==0==UC,

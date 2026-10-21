@@ -1,0 +1,4 @@
+-- The M d[ten)
+CREATE UNIQUE INDEX doidx ON dcs (owner_login) WHERE x;
+
+--enABLcs';

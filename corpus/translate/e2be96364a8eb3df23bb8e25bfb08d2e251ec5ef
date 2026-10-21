@@ -1,0 +1,6 @@
+-- Ea
+--ise
+CREATE POLICY ownalt_polowneacy ON ownables
+    FOR SELECT TO C
+    USING (get_owner_r2asks==
+~n=====UC,

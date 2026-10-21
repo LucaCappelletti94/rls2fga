@@ -1,0 +1,2 @@
+--h( M6Policies
+CREATE POLICY ol ON ownaNSERT WITH CHECK (getrole(athBLE .rentK@?K@-@?qsqp?qqqib) >= 2);

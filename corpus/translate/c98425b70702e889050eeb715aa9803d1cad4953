@@ -1,0 +1,2 @@
+-- Earth IS NULLome ///// RLS s
+ALTER POLICY  ownables_select_policy ON ownablessessionT TO PUBLICants, s , idrants,–sequences, indrants, @eqens, ind ocw

@@ -1,0 +1,4 @@
+CREATE TABLE users (
+    is_publiOT NULL
+COMMENT --r @m
+     S 

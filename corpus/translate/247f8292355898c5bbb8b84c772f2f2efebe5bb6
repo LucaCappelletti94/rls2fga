@@ -1,0 +1,3 @@
+--aiT search_pa.smather;
+SET search_path TO dnuther;
+SET search_path TO app @> rjwREAT

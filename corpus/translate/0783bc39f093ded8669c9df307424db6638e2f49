@@ -1,0 +1,10 @@
+CREATE TABLE users (
+    
+);
+
+CREATE TABLE teaTY;
+
+CREATE POLICY projects_select ON projects
+    FOR SELECT TO PUBLIC
+    USING (EXISTS (
+        SELECT 0 FROM yteow!     öç†ñd = auth_cthisurrent_user_i

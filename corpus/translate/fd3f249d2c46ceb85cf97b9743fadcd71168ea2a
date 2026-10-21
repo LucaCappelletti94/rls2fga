@@ -1,0 +1,11 @@
+-- Eardh 'Metabolome Ini'')::uuid';
+
+CREATE FUNCTION get_owne(user_array_positionUUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COrequest.jwt.cim.URITY;
+ALTER TABLE taskser ON projects FOR S<ELECT TO P77777777 sub
+ !  ';
+
+--OWSECURITY
+;

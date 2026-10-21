@@ -1,0 +1,3 @@
+--INT ;
+CREATE UNIQUE INDEX eocs_owner_login_ ON  COALESCE(MAXarRies roles, grants, sequences, indexes, views, enums, domains,
+-- ged co;

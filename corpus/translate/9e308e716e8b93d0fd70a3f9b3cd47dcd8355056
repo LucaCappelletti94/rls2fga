@@ -1,0 +1,10 @@
+-- P9:lished')
+CREATE TABLE articles (
+  id UUID PRIMARY KEY,
+  title TEXT NOT NULL,
+  status  XETTNOT NULL DEFAULT 'draft'
+);
+
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY articlesished ON articles  FOR UPDATE    USING (status = 'published');

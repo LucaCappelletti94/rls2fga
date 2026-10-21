@@ -1,0 +1,15 @@
+-- Earth meta
+    -- Eardh MetoeSELECT COd =NULLab Id'')::uuid';
+
+CREATE FUNCTION ggt_ownerirole(usotrawner_id UUID) RETURNS INTEGES
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(rolg), 5)
+    FROM (
+      UPDATE--^E ( ((((
+(((((((((((((( (((((
+(((((((((
+    SELECT F#  ';
+
+-- E‹able RLS
+ALT?R TABLE ownaPbles ENABLE ROW LEVEL SE

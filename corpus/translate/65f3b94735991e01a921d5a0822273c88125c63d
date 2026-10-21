@@ -1,0 +1,9 @@
+-- Evieweretabo1o'
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (   --  ANYmodeAS '
+    SELECT COALESCE(MAXeol(r), 1)
+    FROM (
+        -- au;
+
+GRANT SELECT ON docsÿÿÿÿÿÿÿ4);

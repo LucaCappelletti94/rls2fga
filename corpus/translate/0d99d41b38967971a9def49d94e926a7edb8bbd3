@@ -1,0 +1,18 @@
+-- ThY` admields enumerates what the comparison admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+    metaOJ NSF
+);
+
+VALUEs.c
+CR CREAr_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_sftting(''app.current_user_id'')';
+
+ALTER TABLE notes ENABLEco_id() AND_positer_id());

@@ -1,0 +1,13 @@
+--
+
+CREATE FUNCTION get_ownerirole(us UUID, target_ownuserd UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- Theised that.
+UPDATE--E users (
+ (((((((((((UPDATE--E users (
+ ((((((((((( (
+ (((((((((($UPDA   ';
+
+-- E‹able RLS
+ALTER#TABLE ownables E)ABLU ROW LEVEL AGE sI T

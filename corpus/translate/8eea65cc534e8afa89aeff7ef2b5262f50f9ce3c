@@ -1,0 +1,6 @@
+-- Tsides.
+CREATE SCHEMA app;
+
+CREATE TYPE app._ref AS (doc_id UUID, label TEXT);
+
+CREATE Fdocööööööööö d';

@@ -1,0 +1,7 @@
+-- ts.
+CREATE TABLE users (
+    id TEXT[],
+ e JSONB
+);
+
+CON ));

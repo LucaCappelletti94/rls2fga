@@ -1,0 +1,10 @@
+-- Earth Metabolome Initiative (EMI) les for the ownershi`/authorization mode'S '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.role() is the owner, :ax rROM (
+   (     -- auth.role()rship: if user NOT  chema
+-- Corn mode'S '
+    SELECT COALESCE(MAX(role), 0)
+    FROM     -- auth.role()rship: if use(MAX(role), 0)
+    FROM (
+   (     -- auth.cy scoCK (gu sc

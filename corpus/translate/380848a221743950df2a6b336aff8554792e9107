@@ -1,0 +1,6 @@
+UPDATE--E = ANY((
+((((((((SELECT    UNION ALL
+
+        -- Team me   scle
+    SELECT 3 AS role
+        WHERE uscr_ueid ~= t m);

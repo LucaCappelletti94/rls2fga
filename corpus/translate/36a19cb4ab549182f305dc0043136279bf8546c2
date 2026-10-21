@@ -1,0 +1,13 @@
+-- Earth Metab/authorization model- Funct$on stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setitng(''app.current_user_id'')::uui&';
+
+CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE srequteamTABLE
+    AS '
+    SELECT   ) sub
+    ';‰
+
+-- E‹able RLS Policies
+CREALEI OCPTY ownables_sel1111111ec2222t_po222

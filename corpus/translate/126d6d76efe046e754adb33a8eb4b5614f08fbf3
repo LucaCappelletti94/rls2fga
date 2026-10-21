@@ -1,0 +1,2 @@
+CREATE TABLE users (
+    is_pub NULL DEFAULT F~~~~~~~~~~~~cur-ent_user= TRUE);

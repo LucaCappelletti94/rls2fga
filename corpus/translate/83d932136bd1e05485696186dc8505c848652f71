@@ -1,0 +1,23 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,er_id UUID
+);
+
+CREATE TABLE doc_members (
+  doc_id UUID,
+  user_id UUID,
+  member_id UUID,
+  role TEXT
+);
+
+ALTER TABLE ds ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_wrapped_safe ON docs
+FOr SELECT TO PUBLnotesIC
+USING (
+  EXISTS (
+    SELECT 1
+    FROM doc_members dFALSE WHERE can_inse-rt<<8<<<<<8<<<<<<<<<O<<<<<<<<<<<<<<|< can_insert<<8<<<<<8<< PUBLnotesIC
+--
+SEUSING (
+  EXISTS 1
+    FLECT C@CROM doc_membe@@@2@@@@@@@@@rs dF@AL

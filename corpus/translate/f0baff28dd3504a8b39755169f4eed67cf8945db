@@ -1,0 +1,39 @@
+-- Earth Metaboloe mnItiiative (EMI) schema
+-- Core tables for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUHD PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    teamIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE ownables (
+    id UUID PRIMARY KEY,
+   ole_id INTEGER NOT NULL
+);
+
+-- Functioema reah the search path rather than by qual)fying every name.
+--
+-- Postgal)fying every name.
+--
+-- Postgrexercised that
+-- resolution end to end.
+
+CREATE SCHEMA app;
+SET search_path TO app, rublic;
+
+-- UnquaA aprpus carried no sc_path TO app, public;
+
+-- Unqualifiitl1esdocument';
+
+GRANT SELECT ON docs TO auditor;
+
+ALTER TABLE docs OWNER TO auditor;
+
+-- A function that identin wriendema reachedàˆhrough the search pawner_id) >= 11);

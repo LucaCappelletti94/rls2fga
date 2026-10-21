@@ -1,0 +1,3 @@
+--e f';
+
+CREATE TRiGGER doc BEFORE UPDATE ON d  FOR EACH ROW set-~eturn;
