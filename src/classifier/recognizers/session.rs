@@ -14,7 +14,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use sqlparser::ast::{BinaryOperator, Expr, FunctionArguments, Query, SelectItem};
+use sqlparser::ast::{BinaryOperator, Expr, FunctionArguments, InTarget, Query, SelectItem};
 
 use crate::classifier::function_registry::{
     FunctionRegistry, SessionAttribute, SessionAttributeKind,
@@ -69,9 +69,9 @@ fn set_membership(expr: &Expr, registry: &FunctionRegistry) -> Option<Classified
 /// lands on the same pattern. The subquery has to be only its projection, which is what
 /// keeps this away from a membership subquery: that one always reads a `FROM`.
 fn set_membership_in_subquery(expr: &Expr, registry: &FunctionRegistry) -> Option<ClassifiedExpr> {
-    let Expr::InSubquery {
+    let Expr::In {
         expr: left,
-        subquery,
+        target: InTarget::Subquery(subquery),
         negated: false,
         global: false,
     } = expr
@@ -389,8 +389,8 @@ pub(crate) fn undeclared_set_reads(expr: &Expr, registry: &FunctionRegistry) -> 
                 right,
                 ..
             } => array_valued_set(right, registry),
-            Expr::InSubquery {
-                subquery,
+            Expr::In {
+                target: InTarget::Subquery(subquery),
                 negated: false,
                 ..
             } => {
@@ -635,18 +635,18 @@ mod tests {
             recognize_session_attribute(&expr, &registry).is_some(),
             "sanity: the ordinary IN subquery reads the declared set"
         );
-        let Expr::InSubquery {
+        let Expr::In {
             expr: left,
-            subquery,
+            target: target @ InTarget::Subquery(_),
             negated,
             ..
         } = &expr
         else {
-            panic!("expected an InSubquery");
+            panic!("expected an IN subquery");
         };
-        let global = Expr::InSubquery {
+        let global = Expr::In {
             expr: left.clone(),
-            subquery: subquery.clone(),
+            target: target.clone(),
             negated: *negated,
             global: true,
         };

@@ -1,7 +1,8 @@
 #[cfg(not(feature = "std"))]
 use crate::no_std_prelude::*;
 use sqlparser::ast::{
-    BinaryOperator, Expr, FunctionArguments, Select, SelectItem, TableFactor, UnaryOperator, Value,
+    BinaryOperator, Expr, FunctionArguments, InTarget, Select, SelectItem, TableFactor,
+    UnaryOperator, Value,
 };
 
 use crate::classifier::function_registry::{
@@ -281,9 +282,9 @@ fn extract_role_names_from_in_list(list: &[Expr], allow_numeric: bool) -> Option
 /// expression with two spellings. Negated lists refuse elsewhere.
 pub(super) fn constant_in_list(expr: &Expr) -> Option<(&Expr, &[Expr])> {
     match expr {
-        Expr::InList {
+        Expr::In {
             expr,
-            list,
+            target: InTarget::List(list),
             negated: false,
             global: false,
         } => Some((expr, list)),
