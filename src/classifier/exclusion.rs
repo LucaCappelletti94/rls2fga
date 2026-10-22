@@ -16,7 +16,7 @@ use crate::classifier::recognizers::{
 use crate::parser::names::lookup_table_id;
 use crate::parser::sql_parser::DatabaseLike;
 use crate::types::{ColumnName, TableId};
-use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator};
+use sqlparser::ast::{BinaryOperator, Expr, InTarget, UnaryOperator};
 
 /// Why a correlated blocklist cannot be represented exactly.
 #[derive(Debug, thiserror::Error)]
@@ -138,7 +138,11 @@ fn has_exclusion_conjunct(expr: &Expr, depth: u32) -> bool {
             right,
         } => has_exclusion_conjunct(left, depth + 1) || has_exclusion_conjunct(right, depth + 1),
         Expr::Exists { negated: true, .. }
-        | Expr::InSubquery { negated: true, .. }
+        | Expr::In {
+            target: InTarget::Subquery(_),
+            negated: true,
+            ..
+        }
         | Expr::AllOp {
             compare_op: BinaryOperator::NotEq,
             ..
@@ -331,18 +335,18 @@ fn exclusion_conjunct<DB: DatabaseLike>(
             },
             _ => return Ok(None),
         },
-        Expr::InSubquery {
+        Expr::In {
             expr: left,
-            subquery,
+            target: target @ InTarget::Subquery(_),
             negated: true,
             global: false,
         } => {
             if !is_current_user_expr(left, registry) {
                 return Ok(None);
             }
-            Expr::InSubquery {
+            Expr::In {
                 expr: left.clone(),
-                subquery: subquery.clone(),
+                target: target.clone(),
                 negated: false,
                 global: false,
             }
@@ -352,9 +356,9 @@ fn exclusion_conjunct<DB: DatabaseLike>(
             compare_op: BinaryOperator::NotEq,
             right,
         } => match right.as_ref() {
-            Expr::Subquery(subquery) if is_current_user_expr(left, registry) => Expr::InSubquery {
+            Expr::Subquery(subquery) if is_current_user_expr(left, registry) => Expr::In {
                 expr: left.clone(),
-                subquery: subquery.clone(),
+                target: InTarget::Subquery(subquery.clone()),
                 negated: false,
                 global: false,
             },
@@ -421,11 +425,14 @@ fn membership_from_positive<DB: DatabaseLike>(
 fn requires_non_null_projection(conjunct: &Expr) -> bool {
     matches!(
         unparenthesize(conjunct),
-        Expr::InSubquery { negated: true, .. }
-            | Expr::AllOp {
-                compare_op: BinaryOperator::NotEq,
-                ..
-            }
+        Expr::In {
+            target: InTarget::Subquery(_),
+            negated: true,
+            ..
+        } | Expr::AllOp {
+            compare_op: BinaryOperator::NotEq,
+            ..
+        }
     )
 }
 
@@ -496,18 +503,18 @@ ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
             "sanity: the ordinary NOT IN subquery is read as a blocklist"
         );
 
-        let Expr::InSubquery {
+        let Expr::In {
             expr: tested,
-            subquery,
+            target: target @ InTarget::Subquery(_),
             negated,
             ..
         } = &expr
         else {
-            panic!("expected an InSubquery");
+            panic!("expected an IN subquery");
         };
-        let global = Expr::InSubquery {
+        let global = Expr::In {
             expr: tested.clone(),
-            subquery: subquery.clone(),
+            target: target.clone(),
             negated: *negated,
             global: true,
         };

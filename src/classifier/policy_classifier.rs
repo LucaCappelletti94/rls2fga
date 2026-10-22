@@ -2,7 +2,7 @@
 use crate::no_std_prelude::*;
 use crate::parser::names::table_has_column;
 use crate::types::ColumnName;
-use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value};
+use sqlparser::ast::{BinaryOperator, Expr, InTarget, UnaryOperator, Value};
 
 use crate::classifier::expansion::{self, ExpansionState};
 use crate::classifier::function_registry::{FunctionRegistry, SessionAttribute};
@@ -498,7 +498,12 @@ fn classify_expr_inner<DB: DatabaseLike>(
 
     // Handle negated structural forms (NOT IN list / NOT EXISTS / NOT IN subquery).
     // Each recognizer already returns None for these, so intercept them here to give
-    if let Expr::InList { negated: true, .. } = expr {
+    if let Expr::In {
+        target: InTarget::List(_),
+        negated: true,
+        ..
+    } = expr
+    {
         return unknown_d(
             expr,
             "NOT IN (...) cannot be represented as static OpenFGA tuples because negation \
@@ -512,7 +517,12 @@ fn classify_expr_inner<DB: DatabaseLike>(
              negation requires runtime filtering",
         );
     }
-    if let Expr::InSubquery { negated: true, .. } = expr {
+    if let Expr::In {
+        target: InTarget::Subquery(_),
+        negated: true,
+        ..
+    } = expr
+    {
         return unknown_d(
             expr,
             "NOT IN (subquery) cannot be represented as static OpenFGA membership tuples \

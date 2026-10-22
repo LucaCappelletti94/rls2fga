@@ -324,8 +324,10 @@ pub(crate) fn conjunct_reads_only_the_row(
                 && pure(low)
                 && pure(high)
         }
-        Expr::InList {
-            expr: inner, list, ..
+        Expr::In {
+            expr: inner,
+            target: InTarget::List(list),
+            ..
         } => {
             !(is_session_zoned_column(inner, session_zoned_columns)
                 && list.iter().any(literal_uses_session_against_zoned_column))

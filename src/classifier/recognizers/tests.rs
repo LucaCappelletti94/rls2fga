@@ -212,18 +212,18 @@ fn recognize_p2_role_in_list_refuses_the_clickhouse_global_modifier() {
     let registry = registry_with_role_level();
 
     let ok = parse_expr("role_level(auth_current_user_id(), id) IN ('viewer', 2)");
-    let Expr::InList {
+    let Expr::In {
         expr,
-        list,
+        target: target @ InTarget::List(_),
         negated,
         ..
     } = &ok
     else {
-        panic!("expected an InList");
+        panic!("expected an IN list");
     };
-    let global = Expr::InList {
+    let global = Expr::In {
         expr: expr.clone(),
-        list: list.clone(),
+        target: target.clone(),
         negated: *negated,
         global: true,
     };
@@ -2229,18 +2229,18 @@ fn recognize_p4_in_subquery_refuses_the_clickhouse_global_modifier() {
                WHERE dm.user_id = auth_current_user_id()
              )",
     );
-    let Expr::InSubquery {
+    let Expr::In {
         expr,
-        subquery,
+        target: target @ InTarget::Subquery(_),
         negated,
         ..
     } = &in_subquery
     else {
-        panic!("expected an InSubquery");
+        panic!("expected an IN subquery");
     };
-    let global = Expr::InSubquery {
+    let global = Expr::In {
         expr: expr.clone(),
-        subquery: subquery.clone(),
+        target: target.clone(),
         negated: *negated,
         global: true,
     };
@@ -3437,7 +3437,7 @@ fn strip_qualifier_from_expr_handles_unary_cast_is_null_is_not_null_in_list() {
     strip_qualifier_from_expr(&mut is_not_null, "doc_members", Some("dm"));
     assert!(!is_not_null.to_string().contains("dm."));
 
-    // InList: dm.role IN ('admin', 'editor')
+    // IN list: dm.role IN ('admin', 'editor')
     let mut in_list = parse_expr("dm.role IN ('admin', 'editor')");
     strip_qualifier_from_expr(&mut in_list, "doc_members", Some("dm"));
     assert!(!in_list.to_string().contains("dm."));
@@ -3479,7 +3479,7 @@ fn strip_qualifier_from_expr_handles_function_wrapped_identifiers() {
 
 #[test]
 fn predicate_references_other_table_recursive_arms() {
-    // InList with other-table reference
+    // IN list with other-table reference
     let inlist = parse_expr("other.col IN ('a', 'b')");
     assert!(predicate_references_other_table(
         &inlist,
@@ -3911,11 +3911,10 @@ fn qualifier_matches_table_compares_stored_identifiers() {
     assert!(qualifier_matches_table("M", "public.members", Some("M")));
 }
 
-// 9. diagnose_p4_membership_ambiguity: InSubquery form
+// 9. diagnose_p4_membership_ambiguity: IN subquery form
 #[test]
 fn diagnose_p4_membership_ambiguity_in_subquery_with_multiple_sources() {
-    // Build a schema with two membership-like tables so the InSubquery path
-    // can find multiple matches → ambiguous.
+    // Two membership-like tables make the IN subquery match ambiguously.
     let db = parse_schema(
         r"
 CREATE TABLE docs(id UUID PRIMARY KEY);
@@ -3926,7 +3925,7 @@ CREATE TABLE doc_editors(doc_id UUID, user_id UUID);
     .unwrap();
     let registry = FunctionRegistry::new();
 
-    // InSubquery form with two FROM sources
+    // IN subquery form with two FROM sources
     let expr = parse_expr(
         "id IN (
                 SELECT dm.doc_id
@@ -3939,11 +3938,10 @@ CREATE TABLE doc_editors(doc_id UUID, user_id UUID);
     );
     let result =
         diagnose_p4_membership_ambiguity(&expr, &db, &registry, "docs", &ExpansionState::new());
-    // Should reach the InSubquery branch and produce Some diagnostic
-    // (either "multiple candidate" or "could not infer")
+    // Either "multiple candidate" or "could not infer" is a diagnostic.
     assert!(
         result.is_some(),
-        "InSubquery with multiple membership sources should be diagnosed as ambiguous"
+        "IN subquery with multiple membership sources should be diagnosed as ambiguous"
     );
 }
 
@@ -4373,7 +4371,7 @@ fn diagnose_p4_membership_ambiguity_negated_exists() {
     );
 }
 
-// Additional: diagnose_p4 InSubquery negated → falls to _ => None
+// Additional: diagnose_p4 IN subquery negated → falls to _ => None
 #[test]
 fn diagnose_p4_membership_ambiguity_negated_in_subquery() {
     let db = db_with_docs_and_members();

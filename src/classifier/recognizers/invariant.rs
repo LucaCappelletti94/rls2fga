@@ -9,7 +9,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use core::cmp::Ordering;
 use core::ops::ControlFlow;
 use sqlparser::ast::{
-    BinaryOperator, Expr, Ident, ObjectName, ObjectNamePart, Query, SelectItem, SetExpr,
+    BinaryOperator, Expr, Ident, InTarget, ObjectName, ObjectNamePart, Query, SelectItem, SetExpr,
     TableFactor, Value, Visit, VisitMut, Visitor, VisitorMut,
 };
 
@@ -318,8 +318,10 @@ fn answer_depends_on_the_asker(
                 | Expr::IsDistinctFrom(..)
                 | Expr::IsNotDistinctFrom(..)
                 | Expr::Between { .. }
-                | Expr::InList { .. }
-                | Expr::InSubquery { .. }
+                | Expr::In {
+                    target: InTarget::List(_) | InTarget::Subquery(_),
+                    ..
+                }
                 | Expr::AnyOp { .. }
                 | Expr::AllOp { .. }
                 | Expr::Like { .. }
@@ -585,8 +587,10 @@ impl<DB: DatabaseLike> VisitorMut for SubstituteEmpty<'_, DB> {
     fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<()> {
         let placement = match expr {
             Expr::Exists { subquery, negated }
-            | Expr::InSubquery {
-                subquery, negated, ..
+            | Expr::In {
+                target: InTarget::Subquery(subquery),
+                negated,
+                ..
             } => {
                 let negated = *negated;
                 self.placement(subquery, |query| {

@@ -815,9 +815,9 @@ fn readable_exists_select(expr: &Expr) -> Option<&Select> {
 /// membership test.
 fn membership_subquery_operands(expr: &Expr) -> Option<(&Expr, &Query, Option<SubqueryRefusal>)> {
     let (lhs, query) = match expr {
-        Expr::InSubquery {
+        Expr::In {
             expr: lhs,
-            subquery,
+            target: InTarget::Subquery(subquery),
             negated: false,
             global: false,
         } => (lhs.as_ref(), subquery.as_ref()),
@@ -2064,9 +2064,9 @@ fn analyze_membership_eq_predicate(
             right,
             ..
         } => Some((left, caller_set(right, registry))),
-        Expr::InSubquery {
+        Expr::In {
             expr,
-            subquery,
+            target: InTarget::Subquery(subquery),
             negated: false,
             global: false,
         } => Some((expr, caller_set_in_subquery(subquery, registry))),

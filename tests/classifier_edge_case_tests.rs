@@ -711,7 +711,7 @@ CREATE POLICY p ON docs FOR SELECT
             &c.pattern,
             PatternClass::P4ExistsMembership(ExistsMembership { .. })
         ),
-        "InSubquery form should classify as P4, got: {:?}",
+        "IN subquery form should classify as P4, got: {:?}",
         c.pattern
     );
 }

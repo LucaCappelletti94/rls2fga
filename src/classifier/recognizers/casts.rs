@@ -10,7 +10,7 @@
 use crate::no_std_prelude::*;
 use core::ops::ControlFlow;
 
-use sqlparser::ast::{BinaryOperator, Expr};
+use sqlparser::ast::{BinaryOperator, Expr, InTarget};
 
 use super::session::{declared_read, set_read, sole_projection};
 use super::{
@@ -186,9 +186,9 @@ fn compared_operands<'e>(
             right,
             ..
         } => [(left, right), (right, left)],
-        Expr::InSubquery {
+        Expr::In {
             expr: tested,
-            subquery,
+            target: InTarget::Subquery(subquery),
             negated: false,
             global: false,
         } => {
@@ -227,18 +227,18 @@ mod tests {
             !compared_operands(&expr, &registry).is_empty(),
             "sanity: the ordinary IN subquery reads the caller"
         );
-        let Expr::InSubquery {
+        let Expr::In {
             expr: tested,
-            subquery,
+            target: target @ InTarget::Subquery(_),
             negated,
             ..
         } = &expr
         else {
-            panic!("expected an InSubquery");
+            panic!("expected an IN subquery");
         };
-        let global = Expr::InSubquery {
+        let global = Expr::In {
             expr: tested.clone(),
-            subquery: subquery.clone(),
+            target: target.clone(),
             negated: *negated,
             global: true,
         };
