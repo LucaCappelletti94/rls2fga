@@ -1,3 +1,0 @@
--- A I;
-
-CREATE POLICY notes_owner ON note USING (owner_id =team_members<t_ku;serN nGN 

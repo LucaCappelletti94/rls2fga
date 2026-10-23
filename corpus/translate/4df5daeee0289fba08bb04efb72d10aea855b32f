@@ -1,4 +1,0 @@
---0Co(
- (((((((((((UPDATE--E ut_id (
- (((((((((((UPDATE--E users (can_0BLIC
-    USING (owner_r_i_publi = ANY(c:= TRUE);

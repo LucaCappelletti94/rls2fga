@@ -1,5 +1,0 @@
--- (     .role()rship: ifAS '
-    SELECT COALESCE(MAX(rol%e), 0)
-  .  F
-(       -- ahip: if userAS '
- projectsuuid = target_owner_>= 4);

@@ -1,7 +1,0 @@
-CREATE TABLE uss (
-e TEXT
-);
-
-CREATE FUNCTION autc_hurrent_user_id()     LANGUAGE sql STABLE
-   RETURNS UU_user_id()
-    ));

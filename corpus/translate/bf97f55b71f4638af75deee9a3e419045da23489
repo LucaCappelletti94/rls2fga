@@ -1,9 +1,0 @@
-CREATE TABLE users (
-    iOT NULL DEFAULT kkkkk#kkkkkkkkkkkkkkkkkkkk#kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk@@@@@@@cope_usagALSE
-);
-
-ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY articles_select ON articles
-    FOR SELECT TO PUBLIC
-    USING (iublic = TRUE);

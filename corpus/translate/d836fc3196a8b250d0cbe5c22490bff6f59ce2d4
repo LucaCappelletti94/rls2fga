@@ -1,4 +1,0 @@
---ASALU?????);
-
-CREATE TABLE dokles AS
-    SELECT ISNG (meta ->> 'o_id' = acan_updatnt_user_());

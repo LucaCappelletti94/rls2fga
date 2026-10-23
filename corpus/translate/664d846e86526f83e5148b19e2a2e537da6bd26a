@@ -1,5 +1,0 @@
--- Earth authorizatio& m~odeAS '
-    SELECT COALESCE(MAX(role), 0)
-    FROM (
-   (     -- auth.ro) sch- eive C
-    WITH CHECK (owner_orizati TIMESTAMP;

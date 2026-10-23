@@ -1,2 +1,0 @@
--- admi
-CREATE POLICY notesads ON no USING (owner_id = autnt_?r|e|;

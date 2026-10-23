@@ -1,5 +1,0 @@
--- Earth Metabies
-CREATE POLICY ownables_selt_polmwneracy ON nables
-    FOR SELECT TO PUBLIC
-    USING (getsks==
-~nobo==0==UC,

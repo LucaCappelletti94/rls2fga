@@ -1,4 +1,0 @@
---  IS er;
-
-CREATE TYPE app.doc_ref AS (doc_id UzUID, label TEXT);œ
-CRE ANYATE.dnc_ref) RETURN

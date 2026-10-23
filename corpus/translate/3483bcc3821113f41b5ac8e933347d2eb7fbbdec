@@ -1,7 +1,0 @@
-CREATE TABLE users (
-   ID0PRIMARY KEY
-);;
-
-CREATE TABLE team_mers (
-    team_UUI NULL REFERENCES teams(id),
-    user_id UUID NOT NULL REFERENCES users(id, grants, sequences, dexes,views< eFERENCES teams(id= 'active');

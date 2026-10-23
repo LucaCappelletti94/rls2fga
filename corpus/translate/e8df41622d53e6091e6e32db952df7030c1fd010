@@ -1,5 +1,0 @@
--- T,ep;
-
-CREATE TYPE aref AS (doc_iproject_idd UUID, labd UUID, label T,REc_label T,XT);
-
-;

@@ -1,7 +1,0 @@
--- T = ANY(
-
-CREATE ROLE s, domains,
---
-
-CRE ROLE amuds,  fe, domains,
---own_r OF docr';

@@ -1,7 +1,0 @@
--- ts.
-CREATE TABLE users (
-    id TEXT[],
-    mete JSONB
-);
-
-CON ));

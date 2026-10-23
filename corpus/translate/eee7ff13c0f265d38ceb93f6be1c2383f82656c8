@@ -1,5 +1,0 @@
--- The furniture I);
-CREATE TABLE docs (
-    id U,
-    doubled INT GENERATED U STORED,
-  n

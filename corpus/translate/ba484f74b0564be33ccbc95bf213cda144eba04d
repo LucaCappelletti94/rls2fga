@@ -1,3 +1,0 @@
--- WITHayd es NABLETY;
-
-CREATE POLICY nht ON SELECT  USING (owner_iurid(?));er_d ;

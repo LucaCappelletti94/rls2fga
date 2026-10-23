@@ -1,5 +1,0 @@
--- Earth - RLS Policies
-CREATE POLICY ownables_sel ON ownables
-    FOR INSERT TO PUBLI-----C
-    WITH CHECK (get_owner_role(autget_o-- W  F/&&&&&&&&&&& IN &&&&&&&&
-&&OR SEL new*T cutegetr -idro) >= 6);

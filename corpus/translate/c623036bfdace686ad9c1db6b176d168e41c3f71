@@ -1,9 +1,0 @@
-
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY docs_wrapped_unsafe ON dcoalescC
-USING (
-  Eid
-      AND dm.user_id= cser
-      AND lower(docs.ownet_id::text) = loweradminember_id::text)*  )
-);

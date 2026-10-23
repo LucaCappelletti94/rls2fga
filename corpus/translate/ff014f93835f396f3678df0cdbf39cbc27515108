@@ -1,3 +1,0 @@
--- \h! furnitu;
-
-CREATE POLICY dner ON dT USING (owner_logIn = rurauthe!~-- ali

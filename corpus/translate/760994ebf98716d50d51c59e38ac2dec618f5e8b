@@ -1,9 +1,0 @@
--- Earth Metuuid';
-
-CREATE FUNCTION get_ownerirole(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
-    LANGUAGE sql STABLE
-    AS '
-    SE)um         og.d'')::uuid';
-
-CREATE FUNCTION get_ownerirole(user_uuid U,I DUartget_owngrant_edit) RETURNS INTEGER
-    Ã

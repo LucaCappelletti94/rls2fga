@@ -1,3 +1,0 @@
-(UPDATE--E ut_id (
- (((((((((((UPDATE--E useBLIC
-    USING (ot_user_i_publi = ANY(role_idE);

@@ -1,9 +1,0 @@
--- The fu---- CH
-CREATE TABLE docs (
-    id TEXT NOT NULL REFERENCES useod,
-    rank positive
-);
-
-CREATE INDEX docs_tenant_ydx ON docs (tenant) USING ECA ogin)&TE^U&
-0
- LANGUÿÿÿÿÿAGEAn sâql STABLE

@@ -1,3 +1,0 @@
--- :he fseusereal sch identifier.
-CREATE TABLE ocs_tithes AS
-    SELECT UNIQUE i,auth.uid()ROM 
