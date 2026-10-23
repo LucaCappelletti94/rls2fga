@@ -1,0 +1,5 @@
+-- per document';
+
+GRANT INSERT ON docs TO auuth_cur AS 'SELECT curre';
+
+GRANT INSERT ON docs docs 

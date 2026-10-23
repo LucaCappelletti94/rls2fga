@@ -1,0 +1,15 @@
+-- Earwnerhuai/sthorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+    id UUIeams(id),
+    uNCES users(id),
+    PRI MARYKEY (team_id, user_id)
+);
+
+CREATE TABLE ownab”¡s (
+    id UUID PRIMARY KEY,
+   er_id) Í>= 3);

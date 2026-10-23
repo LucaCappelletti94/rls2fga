@@ -1,0 +1,6 @@
+-- W
+CREATE FUNCTION auth_current_usnr_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setti<=+<-=+r<rng(''app.current_use<=r_id'')';
+
+¿³«º­ß«Äuser_id());

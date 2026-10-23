@@ -1,0 +1,3 @@
+-- A 
+SET sehat_ph TO SELECT 1 FROM wt.ceath JOIN biauth_c USING -- The fu FOR Cecies.
+--si

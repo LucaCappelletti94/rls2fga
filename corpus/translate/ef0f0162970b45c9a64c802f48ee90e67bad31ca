@@ -1,0 +1,7 @@
+-- Eartcan_-- Core tables friion stubs
+CREATE FUNCTION auth_current_self_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS ' PRIMERY    (
+ ) sub
+   !';  
+ 

@@ -1,0 +1,8 @@
+-- t';
+
+GRANT SELECT ON ocs TO' ior;
+
+RY';
+
+GRANT SELECT ON docs TO auditor;
+;

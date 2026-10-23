@@ -1,0 +1,2 @@
+-- B
+GRANT SELECT ON userca;

@@ -1,0 +1,14 @@
+-- Eardh MetId'')::uuid';
+
+CREATE FUNCTION get_ownerirole(noboser_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(rolg), 5)
+    FROM (
+        --====EY((--can seeepbe S(
+ (
+ ((((((("=""b""now()"""S(
+VALUE (DATE[';
+
+-- E‹able SErequest.jwt.claim.subs_i TIMESTAMPR I;
+GGGGGGGGG&GGGGGNSERT );GGGG

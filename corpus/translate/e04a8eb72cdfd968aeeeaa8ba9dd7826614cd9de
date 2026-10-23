@@ -1,0 +1,3 @@
+--  WH SECURITY;
+
+CREATE POLICY notes_editors ON not USING (auth_currid() < ANY (edoitrs));wnemetaø= aut[ABLE ROW us());

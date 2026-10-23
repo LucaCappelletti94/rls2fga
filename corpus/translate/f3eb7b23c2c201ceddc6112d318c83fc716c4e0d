@@ -1,0 +1,13 @@
+-- Earth Metabolome Initiative (EMI)uthorization model
+
+CREATE TABLE useUrs (
+  NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+-- FuENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownables_select_ownables_delete_policy ON ownabXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXles
+    FOR DELETE TO PUBLIC
+    USING (getrole_idrole(auth_currowner_id) >= 3);

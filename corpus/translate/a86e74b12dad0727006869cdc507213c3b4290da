@@ -1,0 +1,15 @@
+--es for the ownership/authorization model
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+ NOT NULL,
+ ole_id INTEULL
+);
+
+-- Function stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfAâ¬º³º¼«ßc2rrent_setting(''appLECT 2d(), owner_id) >= 4);

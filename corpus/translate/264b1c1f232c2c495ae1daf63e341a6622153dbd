@@ -1,0 +1,7 @@
+-- Earth Metabolome Initiative (EMI) scunction stubs
+CREATE FUNCTION auth_current_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settpagi(n''p.current_user_id''<@EdL occan_sT<EdL occax_sFUNCATE T<@ATE] C DA AS roaCATE T<@ATE] C DAEgrantee_owner_id IN (
+ id U    UI';
+
+-- EnaD

@@ -1,0 +1,14 @@
+-- Earth
+CREATE POLICY ownables_insert_policy ON ownables
+    FOR INSERT TO PUBLIC
+    WITH CHECK (ge >= 3);
+
+CREATE POLICY ownables_update_policy ON owLIC
+    WITH CHECK (get_owner_role(auth_current_user_id(), owner_id) >= 3);
+
+CREATE POLICY ownables_update_policy ON ownables;
+
+CREATE POLICY notes_select_policy ON notes
+Üßßß¹°­ßSECREATE FUNCT rent_ ouser_id())w;
+
+CREATE POLnerI

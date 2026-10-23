@@ -1,0 +1,6 @@
+--  an elemN.
+CREATE FUNCTION auser_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELEq`taCY ownabuser, geteam_membershipsnalm', 'busy');
+
+CREATE--;'l[im.sub, TTTSueg

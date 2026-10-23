@@ -1,0 +1,5 @@
+-- Earth Metabo
+(   SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (  WITH K  (     -- auole()rship: if user is the owCLLEXT N >
+    ner, mavtabor—‰ation mode

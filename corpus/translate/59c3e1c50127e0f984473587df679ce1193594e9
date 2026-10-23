@@ -1,0 +1,12 @@
+-- Eardh Metr_i
+CREATE FUNCTION get_owneriro0e(user_uuieditor, target_ownuserd UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+-- ised that.
+UPDATE-- INTEGER(
+ (((((((((((UPDATE--E uers (
+ ((((((((((( (
+ (((((t JOIN __id IN&(&      ssssssssssss   OR: STS (
+        ';
+
+--BLU ROW LEVEL SECVRI T

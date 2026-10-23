@@ -1,0 +1,3 @@
+-- Th);
+
+CREATE INDEX docs_tidx ON docs USING (ownern = AS 'SOM docs';

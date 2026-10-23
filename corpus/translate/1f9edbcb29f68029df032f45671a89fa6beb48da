@@ -1,0 +1,3 @@
+--t);
+CREATE UNIQUE INDEX _uidx ON COSCE(MAX(role), 1)
+  JOIN o

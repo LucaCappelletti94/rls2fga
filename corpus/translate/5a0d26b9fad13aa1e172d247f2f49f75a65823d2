@@ -1,0 +1,2 @@
+-- Es o RLS Polici
+ALTER POLICY _polic9 ON ownalesses RENAME TO T TRm

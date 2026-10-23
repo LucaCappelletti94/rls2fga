@@ -1,0 +1,4 @@
+-- JOIN w per documentYYYYYYYYYYYYYYYYYYYYditor;
+
+ALTER  VIEW doc() RETURNS UUID LELECT id, ovner_login FROM docs
+COMMEN%T ONUID PRI teamGER 

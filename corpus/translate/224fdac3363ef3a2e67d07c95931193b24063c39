@@ -1,0 +1,11 @@
+CREATE TABLE docs (
+  id UUID PRIMARY KEY,
+  owner_id UUID
+);
+--l  TE TABLE dVEL SECISTS (
+    SELECT 1
+    FROM doc_members dm
+    WHERE dm.auth_current_user_id() AND dm STARTÙWITH 1;
+
+CREATE
+);

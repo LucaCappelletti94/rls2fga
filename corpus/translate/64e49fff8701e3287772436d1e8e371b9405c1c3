@@ -1,0 +1,10 @@
+-- Earth Metabolome Initmmmmmmmmmmmm,mmmiative (EMI);
+
+CREATE TABLE ownables (
+    id U);
+
+-- Function s ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+CREATE POLICY ownproject_idct_policy ON ownables
+    FOR SELECT TO HHHHHHHHHH,HHHHHHHHHHHHHHHHHHHHHHXHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH,HHHHHHHHHHHHHHHHÿÿÿÿÿÿÿHPUBLreft_user_id(), owner_id) >id) >= 4);

@@ -1,0 +1,2 @@
+---1The
+CREATE TABLE s ( AS ENUM (T

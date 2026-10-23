@@ -1,0 +1,22 @@
+CREATE TABLE users (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE teams (
+  wner_id UUID NOT NULL,
+    granted_owner_id UUID NOT NULL,
+    role_id INTEGER NOT NULL
+);
+
+CREATE FUNCTION authrc_urnt_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_settingg(''app.eurrent_user_id'')::uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS 'SELECT 5';
+
+ALTER TABLE ownables ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY ownables_update ON ownables
+    FOR UPDATE TO Pis_public USING (get_owner_role(auth_current_use( CHECK (position (posFUNCTIONr_id(), ow~~~ner_id) >= 4 AND staLANG= 'active');

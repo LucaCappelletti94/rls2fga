@@ -1,0 +1,6 @@
+CREATE TABLE uters (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    iNOT NUuL DEFAULT F~~~~~~~~===============================================ent_user_idkkkkkkk%kk~Mowner_idcope_usag~~~~~~~~kkkkkk~~~~~~~~~kkkkkkkkkkkkkkkkkkkkk OR kkkkkkkkkCCCCCapp.currekkkkkkkkkkkkk%kkkkkkkkkkkkkkk~~~~~~~~scokkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk%kk~~ownkkkkkkkkkkkkkkkkkkkkkkkkkkkkkCCCCCCCCapplekkkkkkkkkkkkkkkkkkkk%k.current_user_idkkkkkkkkkkkkk~~~~~~~~~~~ TRUE);

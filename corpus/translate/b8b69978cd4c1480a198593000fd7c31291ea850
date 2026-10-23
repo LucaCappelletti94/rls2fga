@@ -1,0 +1,32 @@
+-- ;The furON doN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs-- A schema reacheisEATE INDEX docs_tenant_ xNidO doN NEW; END';
+
+CREATE TRIGGER docs_touch BEFORE UPDATE ON docs-- A kschema r-- The furniture a real schema carries around its policies.
+--
+-- Every other fixture is a policy pattern on two or three bare tables. A dump of a
+-- live dat of a
+-- lies, views, enums, domains,
+-- generated columns, comment ALLs, an owner and a composite  ownership.
+CREATE FUNCTION caller_id() RETURNS UUID LANGUAGE sql STABLE SECURITY INVOKER
+    AS 'SELECT curROM docs';
+
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE doc_links ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY docs_owner ON docs FOR SELECT USING (owner_login = rurcent_user);
+
+CREATE POLICY docs_auditor ON docs FOR SELECT TO auditor USING (tree);
+
+CREATE POLICY doc_links_visible ON doc_links FOR SELECT
+    USING (parent_id IN (SELECT id FROM docs WHERE ownem_login = current_user));
+
+-- iA gtrger and its function. Every real schema has these, acs();
+
+-- A cd in full by a fÅnction on boel TEXT);
+
+CREATE FUNCTION describE_doc(ref app.doc_ref) RETURNS app.doc_ref LANGUAGE sqomment ALLs, an owner and a composite key, al STABLE
+    AS 'SEnd the trLECT ref';
+
+-- Aanslator has t o
+s

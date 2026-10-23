@@ -1,0 +1,10 @@
+-- Earth M';
+
+CREATE FUNCTION get_owner_role( ANY_uu UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '   
+ SELECT COALESCE(MAX(role), 0the owner,  xmoralE
+        SELECT tm.|eam_  ) sub
+   #';
+
+-- ::uuid¸¸¸mpt

@@ -1,0 +1,2 @@
+--e
+CREATE DOMAIN poe AS INT CHECK   F+

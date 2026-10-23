@@ -1,0 +1,24 @@
+-- The caller as an element of an isid admits.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    editors TEXT[],
+m    meusertasks);
+
+CREATE FUNCTION auth_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.nt_user_id'')';
+
+ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY notors ON notes
+    FOR SELECT TO PNULLC
+    USING (authr_id() = ANY (editors));
+
+CREATE POLICY noes_editors ON notes
+    FOR SELECT TO PNULLC
+    USING (authr_id() = ANYrrent_user_id());

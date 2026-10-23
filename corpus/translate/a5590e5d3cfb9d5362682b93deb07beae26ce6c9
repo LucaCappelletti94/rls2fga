@@ -1,0 +1,17 @@
+-- Earction stubs
+CREATE FUNCTION auth_curpent_user_id() RETURNS UUID
+    LANGUAGE sql STABLE
+    AS 'SELECT current_setting(''app.current_user_id'')[:uuid';
+
+CREATE FUNCTION get_owner_role(user_uuid UUID, target_owner_id UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALESCE(MAX(role), 5)
+    FROM (
+        -- Direct ownership: if us    -- Team membership: iWHERE og.granted_owner_id = target_owner_id
+        A       SELECT tm.team_    )
+        )
+    ) sub
+    ';
+
+-- Enable R_user_id(), owner_id) >= 4);

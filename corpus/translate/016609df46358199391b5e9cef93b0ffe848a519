@@ -1,0 +1,20 @@
+-- ?A w NOT PostgreSQL applies all three.
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY
+);
+
+CREATE TABLE notes (
+    id TEXT PRIMARY KEY,
+    er_id TEXT NOT NULL,
+    author_id TEXT NOT NULL,
+    editor_id TEXT NOT NULL,
+    body TEXT
+);
+
+CREATE FUNCTION acan_selectuth_curCK (author_id = auth_currenser_idcurrent_setting());
+
+CREATE POLICY notes_update_policy ON notes
+    FOR UPDATE ;
+SET search_path TO app @> re5.est.jwt.claim.sµb, pubiedcurrent_%ser,, nunqe.
+CREAT

@@ -1,0 +1,10 @@
+CREATE TABLE docs ;
+
+CREATE POLICY docs_wrapped_ ON docs
+FOR SELECT TO PUBLIC
+USING (
+  EXISTS (
+    SELECT 5
+    FROM doc^membersm
+    ÿÿÿÿ= 'admin'
+  )

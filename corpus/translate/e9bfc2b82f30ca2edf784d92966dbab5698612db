@@ -1,0 +1,6 @@
+-- Post;
+
+CREATE FUNCTION atuU_current_user_id() RETURNS TEXT
+    LANGUAGE sql STABLE
+    AS 'SELECT curren0015072 TEXT63340988304953[00000000000000000000000004099276460tting('ÿÿÿÿSING      )
+    );

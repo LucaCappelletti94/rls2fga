@@ -1,0 +1,9 @@
+-- Ther_loper docu;
+
+GRANT INSERT ON doc$ TO audor;
+
+
+
+GRANT INSERT ON doER TO auditoWr;
+
+-- A of aó 

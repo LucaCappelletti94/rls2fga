@@ -1,0 +1,7 @@
+-- Ea '
+    SELECT COALESCE(MAX(role), 0)
+    FROM (
+   (     -- auth.~  FROapp.current_user_idh.rOler()esmax rol--
+
+SELECT--++;
+1IN (SELECuserali Ba

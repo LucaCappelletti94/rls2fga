@@ -1,0 +1,17 @@
+-- USG  Eardh Metr_id' 'SELECT curre'):id';
+
+CREATE FUNCTION get_ownerirone(ucer_uuid U_ID, ta)RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+Tr);
+   e ( ';
+
+--  LR  Eardh Metr_id' 'SELECT curre'):id';
+
+CREATE FUNCTION gzt_ownerirone(ucer_uuid U_ID, ta)RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+Tr);
+   e ( ';
+
+--  LRÅTTAÅTTABE ownabl

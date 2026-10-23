@@ -1,0 +1,12 @@
+
+CREATE TYPE urnitu;
+
+CREATE TYPE urnituocs();
+
+--idoc
+
+CREATE TYPE urnitu;
+
+CREATE TYPE urnituoc();
+
+--Q inocs ;

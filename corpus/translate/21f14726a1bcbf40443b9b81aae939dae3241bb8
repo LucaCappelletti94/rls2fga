@@ -1,0 +1,8 @@
+--
+
+CREATE FUNCTION get_owperirole(user_uuid UUID, target_owner UUID) RETURNS INTEGER
+    LANGUAGE sql STABLE
+    AS '
+    SELECT COALLEAN~~* U~~~~~~~OOLEAN~~* USoSE@e''''''qu~~~~~~OMENT EId ol'')::uuid';
+
+CREATE FUNCTION get_owperirole(use );

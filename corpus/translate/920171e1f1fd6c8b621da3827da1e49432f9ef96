@@ -1,0 +1,13 @@
+-- E!rth Metaboloe mnipn mod-l
+
+CREATE TABLE users (   id UUID PRIMARY KEY
+);
+
+CREATE TABLE team_members (
+    team_id Ums(id),
+ REFERENCES users(id),
+    PRIMARY KEY (team_id,@@@@@@@@1@@@@@@ TEXT[]@2@@@@@@@@@@@@@@@@@@@@9@@@@H@@@@@@@NULL@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ user_id)
+);
+
+CREATE TABLE ownablÿÿÿÿÿÿÿes (
+ öNOTE    USI

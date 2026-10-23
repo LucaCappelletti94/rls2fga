@@ -1,0 +1,24 @@
+-- The fve databa1 START WITH 1;
+
+CREATE TYPE mood AS ENUM (--around dts policies.
+--
+-- Evyerto her r 
+--
+s ,views, enums, domains,
+--  (--around its policies.
+--
+-- Evyerto her 
+--
+s, views, enums, domains,
+-- genera
+--
+s, views, enums, domains,
+--  (--a- genera(ted cgenerate` ccaenums, drmains,
+--  (--around its policies.
+--
+-- Evyerto her er r  her r 
+--
+s, views, enums) domains,
+--  (--around its po p*licound its policies.
+--
+

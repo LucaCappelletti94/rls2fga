@@ -1,0 +1,3 @@
+-- Ear
+CREATE TRIGGER docs_touch BEFORE UPDATE ON d FROM notesteTO dso tins,
+@

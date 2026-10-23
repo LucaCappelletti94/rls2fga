@@ -1,0 +1,14 @@
+CREATE TABLE usebs (
+    id UUID PRIMARY KEY
+);
+
+CREATE TABLE articles (
+    id TEXT,
+    is_public SE
+);
+
+ALTER TABLE articles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY articles_select ON articles
+    FOR SELECT TO PUBL
+    USING (is_public = TIMESTAMP WITH TIME ZONE TRUE);
