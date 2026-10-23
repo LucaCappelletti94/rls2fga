@@ -25,7 +25,7 @@ use rls2fga::types::{NoteSeverity, TranslationNote};
 
 use crate::examples::{ExampleIcon, EXAMPLES};
 
-const REPO_URL: &str = "https://github.com/LucaCappelletti94/rls2fga";
+const REPO_URL: &str = "https://github.com/connetto-rs/rls2fga";
 const SPONSOR_URL: &str = "https://github.com/sponsors/LucaCappelletti94";
 const OPENFGA_URL: &str = "https://openfga.dev/";
 const PG_RLS_URL: &str = "https://www.postgresql.org/docs/current/ddl-rowsecurity.html";

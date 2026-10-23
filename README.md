@@ -1,8 +1,8 @@
 # rls2fga
 
-[![CI](https://github.com/LucaCappelletti94/rls2fga/actions/workflows/ci.yml/badge.svg)](https://github.com/LucaCappelletti94/rls2fga/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/LucaCappelletti94/rls2fga/graph/badge.svg)](https://codecov.io/gh/LucaCappelletti94/rls2fga)
-[![License](https://img.shields.io/github/license/LucaCappelletti94/rls2fga)](https://github.com/LucaCappelletti94/rls2fga/blob/main/LICENSE)
+[![CI](https://github.com/connetto-rs/rls2fga/actions/workflows/ci.yml/badge.svg)](https://github.com/connetto-rs/rls2fga/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/connetto-rs/rls2fga/graph/badge.svg)](https://codecov.io/gh/connetto-rs/rls2fga)
+[![License](https://img.shields.io/github/license/connetto-rs/rls2fga)](https://github.com/connetto-rs/rls2fga/blob/main/LICENSE)
 
 Convert `PostgreSQL` [Row Level Security](https://www.postgresql.org/docs/current/ddl-rowsecurity.html) policies into an [OpenFGA](https://openfga.dev/docs) authorization model, plus the SQL that fills its relationship tuples from your database.
 
