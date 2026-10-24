@@ -180,7 +180,7 @@ fn type_family_is(data_type: &str, families: &[&str]) -> bool {
     families.iter().any(|family| terminal.starts_with(family))
 }
 
-/// Every relation named in a `FROM`, refusing anything but a plain table reference.
+/// Every relation named in a `FROM`, refusing non-plain tables and index directives.
 ///
 /// A sample, a version, a derived table or a table function reads rows no flag was proven
 /// about.
@@ -199,14 +199,14 @@ impl Visitor for RelationNames {
             json_path: None,
             with_hints,
             partitions,
-            index_hints,
+            index_directives,
             with_ordinality: false,
             ..
         } = factor
         else {
             return ControlFlow::Break(());
         };
-        if !with_hints.is_empty() || !partitions.is_empty() || !index_hints.is_empty() {
+        if !with_hints.is_empty() || !partitions.is_empty() || !index_directives.is_empty() {
             return ControlFlow::Break(());
         }
         self.0.insert(name.to_string());
@@ -643,14 +643,14 @@ fn from_tables<DB: DatabaseLike>(query: &Query, db: &DB) -> Option<BTreeSet<Tabl
                 json_path: None,
                 with_hints,
                 partitions,
-                index_hints,
+                index_directives,
                 with_ordinality: false,
                 ..
             } = factor
             else {
                 return None;
             };
-            if !with_hints.is_empty() || !partitions.is_empty() || !index_hints.is_empty() {
+            if !with_hints.is_empty() || !partitions.is_empty() || !index_directives.is_empty() {
                 return None;
             }
             let table = lookup_table(db, &name.to_string())?;
@@ -788,4 +788,34 @@ fn comparison(op: &BinaryOperator) -> Option<fn(Ordering) -> bool> {
         BinaryOperator::GtEq => Ordering::is_ge,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::sql_parser::parse_schema;
+    use sqlparser::ast::Statement;
+    use sqlparser::dialect::SQLiteDialect;
+    use sqlparser::parser::Parser;
+
+    #[test]
+    fn sqlite_index_directives_are_not_plain_tables() {
+        let db = parse_schema("CREATE TABLE t (id INT PRIMARY KEY);").unwrap();
+        for (sql, plain) in [
+            ("SELECT * FROM t", true),
+            ("SELECT * FROM t INDEXED BY i", false),
+            ("SELECT * FROM t NOT INDEXED", false),
+        ] {
+            let statements = Parser::parse_sql(&SQLiteDialect {}, sql).unwrap();
+            let Statement::Query(query) = &statements[0] else {
+                panic!("expected query");
+            };
+            assert_eq!(
+                query.visit(&mut RelationNames::default()).is_continue(),
+                plain,
+                "{sql}"
+            );
+            assert_eq!(from_tables(query, &db).is_some(), plain, "{sql}");
+        }
+    }
 }
